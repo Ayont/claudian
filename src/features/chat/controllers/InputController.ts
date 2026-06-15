@@ -5,6 +5,7 @@ import {
   detectBuiltInCommand,
   isBuiltInCommandSupported,
 } from '../../../core/commands/builtInCommands';
+import { buildConversationContextBootstrap } from '../../../core/conversation/ConversationContextBootstrap';
 import { ProviderRegistry } from '../../../core/providers/ProviderRegistry';
 import {
   DEFAULT_CHAT_PROVIDER_ID,
@@ -103,6 +104,12 @@ export interface InputControllerDeps {
   getSubagentManager: () => SubagentManager;
   /** Tab-level provider fallback for blank tabs (derived from draft model). */
   getTabProviderId?: () => ProviderId;
+  /**
+   * Consumes (returns and clears) a one-shot conversation-context bootstrap string set
+   * when this conversation was switched to a different provider. Returns falsy when there
+   * is no pending bootstrap (the normal same-provider case).
+   */
+  consumePendingContextBootstrap?: () => string | null | undefined;
   /** Returns true if ready. */
   ensureServiceInitialized?: () => Promise<boolean>;
   openConversation?: (conversationId: string) => Promise<void>;
@@ -308,7 +315,9 @@ export class InputController {
         browserContextOverride: options?.browserContextOverride,
         canvasContextOverride: options?.canvasContextOverride,
       });
-    const { displayContent, turnRequest } = turnSubmission;
+    const { displayContent } = turnSubmission;
+    // `turnRequest` may be reassigned below to prepend a one-shot cross-provider bootstrap.
+    let turnRequest = turnSubmission.turnRequest;
 
     fileContextManager?.markCurrentNoteSent();
 
@@ -394,15 +403,32 @@ export class InputController {
     }
 
     try {
+      // Pass history WITHOUT current turn (userMsg + assistantMsg we just added).
+      // This prevents duplication when rebuilding context for new sessions.
+      const previousMessages = state.messages.slice(0, -2);
+
+      // One-shot cross-provider context carry: when this conversation was just switched
+      // to a different provider, prepend a BOUNDED, framed snapshot of prior turns to the
+      // FIRST turn only so the freshly-started provider session has minimal context.
+      // Consumed exactly once; no-op on normal same-provider turns.
+      const pendingBootstrap = this.deps.consumePendingContextBootstrap?.();
+      if (pendingBootstrap) {
+        const bootstrap = buildConversationContextBootstrap(previousMessages);
+        if (bootstrap) {
+          turnRequest = {
+            ...turnRequest,
+            text: turnRequest.text
+              ? `${bootstrap}\n\n${turnRequest.text}`
+              : bootstrap,
+          };
+        }
+      }
+
       const preparedTurn = agentService.prepareTurn(turnRequest);
       userMsg.content = preparedTurn.persistedContent;
       userMsg.currentNote = preparedTurn.isCompact
         ? undefined
         : preparedTurn.request.currentNotePath;
-
-      // Pass history WITHOUT current turn (userMsg + assistantMsg we just added)
-      // This prevents duplication when rebuilding context for new sessions
-      const previousMessages = state.messages.slice(0, -2);
       for await (const chunk of agentService.query(preparedTurn, previousMessages)) {
         if (state.streamGeneration !== streamGeneration) {
           wasInvalidated = true;

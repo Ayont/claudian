@@ -190,6 +190,15 @@ export interface TabData {
   /** Conversation ID bound to this tab (null for new/empty tabs). */
   conversationId: string | null;
 
+  /**
+   * One-shot, framed conversation-context snapshot to prepend to the NEXT turn only.
+   * Set when a bound conversation is switched to a different provider, so the
+   * freshly-started provider session receives bounded prior context. Consumed (cleared)
+   * exactly once on the next send; never set for same-provider turns. In-memory only —
+   * not persisted.
+   */
+  pendingContextBootstrap?: string | null;
+
   /** Per-tab chat runtime instance for independent streaming. */
   service: ChatRuntime | null;
 

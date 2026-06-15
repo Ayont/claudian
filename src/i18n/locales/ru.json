@@ -74,7 +74,9 @@
     "tabs": {
       "general": "Общие",
       "claude": "Claude",
-      "codex": "Codex"
+      "codex": "Codex",
+      "antigravity": "Antigravity",
+      "kimi": "Kimi"
     },
     "display": "Отображение",
     "conversations": "Разговоры",

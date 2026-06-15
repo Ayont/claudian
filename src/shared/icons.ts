@@ -118,6 +118,23 @@ export const PI_PROVIDER_ICON: ProviderIconSvg = {
   ],
 };
 
+// Google Antigravity brand mark (the "gravity wave" glyph; internal codename
+// "jetski"), taken from Antigravity IDE's vector asset. Single path → tints to
+// `currentColor` like the other monochrome provider marks.
+export const ANTIGRAVITY_PROVIDER_ICON: ProviderIconSvg = {
+  viewBox: '0 0 112 112',
+  path: 'M89.754 92.75c4.667 3.5 11.667 1.167 5.25-5.25-19.25-18.667-15.167-70-39.083-70-23.917 0-19.834 51.333-39.084 70-7 7 .584 8.75 5.25 5.25C40.171 80.5 39.004 58.917 55.921 58.917c16.916 0 15.75 21.583 33.833 33.833Z',
+};
+
+// Kimi / Moonshot mark: a crescent moon (the "moonshot" motif), expressed as a
+// single even-odd path (full disc minus an offset disc). Tints to
+// `currentColor` like the other monochrome provider marks. No official vector
+// shipped with the CLI, so this is a clean geometric brand glyph.
+export const KIMI_PROVIDER_ICON: ProviderIconSvg = {
+  viewBox: '0 0 24 24',
+  path: 'M12 2a10 10 0 1 0 9.95 11.04A8 8 0 0 1 12 2Z',
+};
+
 export interface CreateProviderIconSvgOptions {
   className?: string;
   dataProvider?: string;

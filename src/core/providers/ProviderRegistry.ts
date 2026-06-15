@@ -13,6 +13,7 @@ import {
   type ProviderSettingsReconciler,
   type ProviderSubagentLifecycleAdapter,
   type ProviderTaskResultInterpreter,
+  type ProviderUIOption,
   type TitleGenerationCallback,
   type TitleGenerationService,
 } from './types';
@@ -190,6 +191,27 @@ export class ProviderRegistry {
       }
     }
     return ids;
+  }
+
+  /**
+   * Aggregates model options across ALL enabled providers, tagging each option with
+   * its owning provider's display-name `group` and `providerIcon`. This powers the
+   * unified model dropdown: a single conversation can pick any enabled provider's model.
+   *
+   * When only one provider is enabled the result is that provider's own options
+   * (tagged with a single group), so the single-provider experience is unchanged.
+   */
+  static getAggregatedModelOptions(settings: Record<string, unknown>): ProviderUIOption[] {
+    return this.getEnabledProviderIds(settings).flatMap((providerId) => {
+      const uiConfig = this.getChatUIConfig(providerId);
+      const providerIcon = uiConfig.getProviderIcon?.() ?? undefined;
+      const group = this.getProviderDisplayName(providerId);
+      return uiConfig.getModelOptions(settings).map((model) => ({
+        ...model,
+        group,
+        providerIcon,
+      }));
+    });
   }
 }
 

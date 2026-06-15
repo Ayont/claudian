@@ -1,6 +1,7 @@
 import type { Component } from 'obsidian';
 import { Notice, Platform } from 'obsidian';
 
+import { buildConversationContextBootstrap } from '../../../core/conversation/ConversationContextBootstrap';
 import { getHiddenProviderCommandSet } from '../../../core/providers/commands/hiddenCommands';
 import type { ProviderCommandDropdownConfig } from '../../../core/providers/commands/ProviderCommandCatalog';
 import type { ProviderCommandEntry } from '../../../core/providers/commands/ProviderCommandEntry';
@@ -69,14 +70,7 @@ type TabProviderSettings = Record<string, unknown> & {
 export function getBlankTabModelOptions(
   settings: Record<string, unknown>,
 ): ProviderUIOption[] {
-  return ProviderRegistry.getEnabledProviderIds(settings).flatMap((providerId) => {
-    const uiConfig = ProviderRegistry.getChatUIConfig(providerId);
-    const providerIcon = uiConfig.getProviderIcon?.() ?? undefined;
-    const group = ProviderRegistry.getProviderDisplayName(providerId);
-
-    return uiConfig.getModelOptions(settings)
-      .map(model => ({ ...model, group, providerIcon }));
-  });
+  return ProviderRegistry.getAggregatedModelOptions(settings);
 }
 
 /**
@@ -380,6 +374,68 @@ function cleanupTabRuntime(tab: TabData): void {
   }
   tab.service = null;
   tab.serviceInitialized = false;
+}
+
+/**
+ * Switches a BOUND tab's active provider to the owner of `model`, keeping all prior
+ * messages visible. Mirrors the blank-tab switch plumbing (drop the stale runtime, sync
+ * provider services + slash commands, persist the new provider's model, refresh UI), then
+ * arms a one-shot, bounded context bootstrap so the freshly-started provider session gets
+ * minimal prior context on the NEXT turn only. The runtime itself is recreated lazily by
+ * `initializeTabService` on the next send (it rebuilds when `service.providerId` differs).
+ */
+async function switchBoundTabProvider(
+  tab: TabData,
+  plugin: ClaudianPlugin,
+  model: string,
+  getProviderCatalogConfig?: () => ProviderCatalogInfo,
+  onProviderChanged?: (providerId: ProviderId) => void | Promise<void>,
+): Promise<void> {
+  const newProvider = getEnabledProviderForModel(model, plugin.settings);
+
+  // Arm the one-shot context carry from the messages present BEFORE this switch.
+  const bootstrap = buildConversationContextBootstrap(tab.state.messages);
+  tab.pendingContextBootstrap = bootstrap || null;
+
+  // Drop the stale runtime so the next send reinitializes against the new provider.
+  if (tab.service) {
+    cleanupTabRuntime(tab);
+  }
+  tab.providerId = newProvider;
+  syncTabProviderServices(tab, plugin);
+  syncSlashCommandDropdownForProvider(tab, plugin, getProviderCatalogConfig);
+
+  const uiConfig = ProviderRegistry.getChatUIConfig(newProvider);
+  const providerSettings = await updateTabProviderSettings(tab, plugin, (settings) => {
+    settings.model = model;
+    uiConfig.applyModelDefaults(model, settings);
+  });
+  await uiConfig.prepareModelMetadata?.(model, plugin.settings, { plugin });
+
+  // Persist the conversation's active provider so a reload before the next send keeps it.
+  if (tab.conversationId) {
+    try {
+      await plugin.updateConversation(tab.conversationId, { providerId: newProvider });
+    } catch {
+      // Best-effort — the in-memory provider + next-turn save() still carry the switch.
+    }
+  }
+
+  await onProviderChanged?.(newProvider);
+
+  // Recalculate context usage for the new model's context window.
+  const currentUsage = tab.state.usage;
+  if (currentUsage) {
+    const newContextWindow = uiConfig.getContextWindowSize(
+      model,
+      providerSettings.customContextLimits,
+      providerSettings,
+    );
+    tab.state.usage = recalculateUsageForModel(currentUsage, model, newContextWindow);
+  }
+
+  refreshTabProviderUI(tab, plugin);
+  applyProviderUIGating(tab, plugin);
 }
 
 /**
@@ -820,7 +876,15 @@ function initializeInputToolbar(
       if (tab.lifecycleState === 'blank') {
         return blankTabUIConfigProxy();
       }
-      return getTabChatUIConfig(tab, plugin);
+      // Bound tabs also surface the unified, cross-provider model list so a single
+      // conversation can switch to any enabled provider's model. All other config
+      // (reasoning, permissions, etc.) stays bound to the tab's current provider.
+      const baseConfig = getTabChatUIConfig(tab, plugin);
+      return {
+        ...baseConfig,
+        getModelOptions: (settings: Record<string, unknown>) =>
+          ProviderRegistry.getAggregatedModelOptions(settings),
+      };
     },
     getCapabilities: () => getTabCapabilities(tab, plugin),
     getSettings: () => getTabSettingsSnapshot(tab, plugin),
@@ -865,12 +929,13 @@ function initializeInputToolbar(
         return;
       }
 
-      // For bound tabs, reject cross-provider model changes
+      // Bound tabs: if the chosen model belongs to a DIFFERENT provider, switch the
+      // conversation's active provider in-place (recreate runtime lazily, keep all prior
+      // messages visible) and arm a one-shot context bootstrap for the next turn.
       const boundProvider = tab.providerId;
       const modelProvider = getProviderForModel(model, plugin.settings);
       if (modelProvider !== boundProvider) {
-        new Notice('Cannot switch provider on a bound session. Start a new tab instead.');
-        tab.ui.modelSelector?.updateDisplay();
+        await switchBoundTabProvider(tab, plugin, model, getProviderCatalogConfig, onProviderChanged);
         return;
       }
 
@@ -1408,6 +1473,11 @@ export function initializeTabControllers(
     getAgentService: () => tab.service,
     getSubagentManager: () => services.subagentManager,
     getTabProviderId: () => getTabProviderId(tab, plugin),
+    consumePendingContextBootstrap: () => {
+      const pending = tab.pendingContextBootstrap;
+      tab.pendingContextBootstrap = null;
+      return pending;
+    },
     ensureServiceInitialized: async () => {
       if (tab.serviceInitialized && tab.lifecycleState === 'bound_active') {
         return true;

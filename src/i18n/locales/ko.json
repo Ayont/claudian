@@ -74,7 +74,9 @@
     "tabs": {
       "general": "일반",
       "claude": "Claude",
-      "codex": "Codex"
+      "codex": "Codex",
+      "antigravity": "Antigravity",
+      "kimi": "Kimi"
     },
     "display": "표시",
     "conversations": "대화",

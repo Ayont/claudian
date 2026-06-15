@@ -74,7 +74,9 @@
     "tabs": {
       "general": "Allgemein",
       "claude": "Claude",
-      "codex": "Codex"
+      "codex": "Codex",
+      "antigravity": "Antigravity",
+      "kimi": "Kimi"
     },
     "display": "Anzeige",
     "conversations": "Unterhaltungen",

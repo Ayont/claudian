@@ -74,7 +74,9 @@
     "tabs": {
       "general": "通用",
       "claude": "Claude",
-      "codex": "Codex"
+      "codex": "Codex",
+      "antigravity": "Antigravity",
+      "kimi": "Kimi"
     },
     "display": "显示",
     "conversations": "对话",
