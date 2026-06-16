@@ -1,10 +1,10 @@
 {
   "id": "realclaudian",
   "name": "ayontclaudian",
-  "version": "2.0.24",
+  "version": "2.1.0",
   "minAppVersion": "1.7.2",
   "description": "ayontclaudian — embeds Claude Code, Codex, Antigravity, Kimi and other coding-agent CLIs as AI collaborators in your vault, with a unified model picker and intelligent mid-chat provider switching. Your vault is their working directory: file read/write, search, bash, and multi-step agentic workflows.",
-  "author": "Yishen Tu",
-  "authorUrl": "https://github.com/YishenTu",
+  "author": "Ayont",
+  "authorUrl": "https://github.com/Ayont/ayontclaudian",
   "isDesktopOnly": true
 }
