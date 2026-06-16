@@ -1,8 +1,8 @@
-import type { ProviderCommandEntry } from '@/core/providers/commands/ProviderCommandEntry';
 import {
   expandProviderCommandInput,
   substituteArguments,
 } from '@/core/providers/commands/expandProviderCommandInput';
+import type { ProviderCommandEntry } from '@/core/providers/commands/ProviderCommandEntry';
 
 function makeEntry(overrides: Partial<ProviderCommandEntry>): ProviderCommandEntry {
   return {

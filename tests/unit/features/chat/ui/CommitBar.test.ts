@@ -24,7 +24,7 @@ function createMockGit(overrides: Partial<Record<string, jest.Mock>> = {}) {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function findByClass(root: any, cls: string): any {
   return root.querySelector(`.${cls}`);
 }

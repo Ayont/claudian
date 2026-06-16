@@ -158,7 +158,7 @@ export class CommitBar {
     if (this.destroyed) {
       return;
     }
-    let isRepo = false;
+    let isRepo: boolean;
     try {
       isRepo = await this.git.isRepo();
     } catch {
