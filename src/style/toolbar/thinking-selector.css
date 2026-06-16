@@ -2,7 +2,7 @@
 .claudian-thinking-selector {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--cl-space-2);
 }
 
 /* Effort / budget container (shared layout) */
@@ -10,11 +10,12 @@
 .claudian-thinking-budget {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--cl-space-2);
 }
 
 .claudian-thinking-label-text {
-  font-size: 11px;
+  font-family: var(--cl-font-ui);
+  font-size: var(--cl-text-xs);
   color: var(--text-muted);
 }
 
@@ -22,19 +23,34 @@
   position: relative;
   display: flex;
   align-items: center;
-  border-radius: 4px;
+  border-radius: var(--cl-radius-pill);
 }
 
 /* Current selection (visible when collapsed) */
 .claudian-thinking-current {
-  padding: 3px 8px;
-  font-size: 11px;
-  color: var(--claudian-brand);
+  padding: 2px var(--cl-space-2);
+  font-family: var(--cl-font-ui);
+  font-size: var(--cl-text-xs);
+  color: var(--cl-accent);
   font-weight: 500;
   cursor: pointer;
-  border-radius: 3px;
+  border: 1px solid transparent;
+  border-radius: var(--cl-radius-pill);
   white-space: nowrap;
   background: transparent;
+  transition: background var(--cl-dur-fast) var(--cl-ease),
+    border-color var(--cl-dur-fast) var(--cl-ease);
+}
+
+.claudian-thinking-gears:hover .claudian-thinking-current,
+.claudian-thinking-current:focus-visible {
+  background: var(--cl-accent-soft);
+  border-color: var(--cl-accent-line);
+}
+
+.claudian-thinking-current:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--cl-accent-softer);
 }
 
 /* Options container - expands vertically upward */
@@ -42,42 +58,56 @@
   position: absolute;
   left: 0;
   bottom: 100%;
-  margin-bottom: 0;
+  margin-bottom: var(--cl-space-1);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 4px;
+  background: var(--cl-surface-overlay);
+  border: 1px solid var(--cl-border-subtle);
+  border-radius: var(--cl-radius-md);
+  box-shadow: var(--cl-shadow-lg);
+  padding: var(--cl-space-1);
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
+  transform: translateY(4px);
+  transition: opacity var(--cl-dur-fast) var(--cl-ease-out),
+    transform var(--cl-dur-fast) var(--cl-ease-out),
+    visibility var(--cl-dur-fast) var(--cl-ease-out);
 }
 
 /* Expand on hover */
 .claudian-thinking-gears:hover .claudian-thinking-options {
   opacity: 1;
   visibility: visible;
+  transform: translateY(0);
 }
 
 .claudian-thinking-gear {
-  padding: 3px 8px;
-  font-size: 11px;
+  padding: var(--cl-space-1) var(--cl-space-2);
+  font-family: var(--cl-font-ui);
+  font-size: var(--cl-text-xs);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 3px;
-  transition: background 0.1s ease, color 0.1s ease;
+  border-radius: var(--cl-radius-sm);
+  transition: background var(--cl-dur-fast) var(--cl-ease),
+    color var(--cl-dur-fast) var(--cl-ease);
   white-space: nowrap;
 }
 
 .claudian-thinking-gear:hover {
-  background: var(--background-modifier-hover);
+  background: var(--cl-accent-soft);
   color: var(--text-normal);
 }
 
+.claudian-thinking-gear:focus-visible {
+  outline: none;
+  background: var(--cl-accent-soft);
+  color: var(--text-normal);
+  box-shadow: inset 0 0 0 1px var(--cl-accent-line);
+}
+
 .claudian-thinking-gear.selected {
-  background: rgba(var(--claudian-brand-rgb), 0.15);
-  color: var(--claudian-brand);
+  background: var(--cl-accent-soft);
+  color: var(--cl-accent);
   font-weight: 500;
 }

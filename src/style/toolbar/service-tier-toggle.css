@@ -11,11 +11,15 @@
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--cl-radius-sm);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: color var(--cl-dur-fast) var(--cl-ease),
+    background var(--cl-dur-fast) var(--cl-ease),
+    border-color var(--cl-dur-fast) var(--cl-ease),
+    transform var(--cl-dur-fast) var(--cl-ease);
   flex-shrink: 0;
 }
 
@@ -31,9 +35,22 @@
 }
 
 .claudian-service-tier-button:hover {
-  background: var(--background-modifier-hover);
+  color: var(--cl-accent);
+  background: var(--cl-accent-soft);
+}
+
+.claudian-service-tier-button:focus-visible {
+  outline: none;
+  border-color: var(--cl-accent-line);
+  box-shadow: 0 0 0 2px var(--cl-accent-softer);
+}
+
+.claudian-service-tier-button:active {
+  transform: scale(0.92);
 }
 
 .claudian-service-tier-button.active {
-  color: var(--claudian-brand);
+  color: var(--cl-accent);
+  background: var(--cl-accent-soft);
+  border-color: var(--cl-accent-line);
 }

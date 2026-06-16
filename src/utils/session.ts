@@ -16,6 +16,8 @@ const SESSION_ERROR_PATTERNS = [
   'session not found',
   'invalid session',
   'session invalid',
+  'no conversation found',
+  'no such session',
   'process exited with code',
 ] as const;
 
@@ -23,6 +25,12 @@ const SESSION_ERROR_COMPOUND_PATTERNS = [
   { includes: ['session', 'expired'] },
   { includes: ['resume', 'failed'] },
   { includes: ['resume', 'error'] },
+  // "session id not found", "the session was not found", "no session ... found":
+  // resuming a session that doesn't exist (e.g. after switching providers in the
+  // same chat, where the stored id belongs to a different provider). Triggers the
+  // history-rebuild cold-restart recovery instead of surfacing a raw error.
+  { includes: ['session', 'not found'] },
+  { includes: ['session', 'does not exist'] },
 ] as const;
 
 export function isSessionExpiredError(error: unknown): boolean {

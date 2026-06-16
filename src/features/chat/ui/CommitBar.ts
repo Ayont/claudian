@@ -1,6 +1,7 @@
 import { setIcon } from 'obsidian';
 
-import type { GitFileChange, GitService } from '../../../core/git/GitService';
+import type { AheadBehind, GitFileChange, GitService } from '../../../core/git/GitService';
+import { toGitHubHttpsUrl } from '../../../core/git/GitService';
 
 /** Cap on file names listed in an auto-suggested commit message. */
 const SUGGEST_FILE_LIMIT = 3;
@@ -59,6 +60,7 @@ export class CommitBar {
   private headerEl: HTMLElement | null = null;
   private branchEl: HTMLElement | null = null;
   private countEl: HTMLElement | null = null;
+  private repoRowEl: HTMLElement | null = null;
   private inputEl: HTMLInputElement | null = null;
   private suggestBtn: HTMLElement | null = null;
   private commitBtn: HTMLElement | null = null;
@@ -67,6 +69,8 @@ export class CommitBar {
 
   private files: GitFileChange[] = [];
   private branch: string | null = null;
+  private remoteUrl: string | null = null;
+  private aheadBehind: AheadBehind | null = null;
   private running = false;
   private destroyed = false;
   private feedbackTimer: number | null = null;
@@ -90,6 +94,9 @@ export class CommitBar {
     setIcon(branchIcon, 'git-branch');
     this.branchEl = branchWrap.createSpan({ cls: 'claudian-commit-bar-branch-name' });
     this.countEl = this.headerEl.createSpan({ cls: 'claudian-commit-bar-count' });
+
+    // Remote/GitHub row — populated (and shown) by updateRepoRow when a remote exists.
+    this.repoRowEl = this.container.createDiv({ cls: 'claudian-commit-bar-repo claudian-hidden' });
 
     const row = this.container.createDiv({ cls: 'claudian-commit-bar-row' });
 
@@ -173,6 +180,16 @@ export class CommitBar {
       this.branch = null;
       this.files = [];
     }
+
+    // Remote + ahead/behind are best-effort: a repo without a remote or upstream
+    // still renders the bar, just without the GitHub row. Never throw to the UI.
+    const [remoteUrl, aheadBehind] = await Promise.all([
+      this.git.getRemoteUrl().catch(() => null),
+      this.git.aheadBehind().catch(() => null),
+    ]);
+    this.remoteUrl = remoteUrl;
+    this.aheadBehind = aheadBehind;
+
     if (this.destroyed) {
       return;
     }
@@ -188,7 +205,54 @@ export class CommitBar {
     if (this.countEl) {
       this.countEl.setText(describeChangeCount(this.files.length));
     }
+    this.updateRepoRow();
     this.updateControls();
+  }
+
+  /**
+   * Renders the remote/GitHub row: a clickable link to the remote (normalized to
+   * an https GitHub URL when applicable) plus ahead/behind vs upstream. Hides
+   * the whole row when there is no remote. Rebuilds from scratch each refresh so
+   * a removed remote disappears cleanly.
+   */
+  private updateRepoRow(): void {
+    const row = this.repoRowEl;
+    if (!row) {
+      return;
+    }
+    row.empty();
+
+    if (!this.remoteUrl) {
+      row.addClass('claudian-hidden');
+      return;
+    }
+
+    const githubUrl = toGitHubHttpsUrl(this.remoteUrl);
+    const href = githubUrl ?? this.remoteUrl;
+    const label = githubUrl ? githubUrl.replace(/^https:\/\//, '') : this.remoteUrl;
+
+    const link = row.createEl('a', { cls: 'claudian-commit-bar-remote' });
+    link.setAttribute('href', href);
+    link.setAttribute('target', '_blank');
+    link.setAttribute('rel', 'noopener noreferrer');
+    link.setAttribute('title', this.remoteUrl);
+
+    const icon = link.createSpan({ cls: 'claudian-commit-bar-remote-icon' });
+    setIcon(icon, githubUrl ? 'github' : 'git-branch');
+    link.createSpan({ cls: 'claudian-commit-bar-remote-name', text: label });
+
+    const ab = this.aheadBehind;
+    if (ab && (ab.ahead > 0 || ab.behind > 0)) {
+      const sync = row.createSpan({ cls: 'claudian-commit-bar-sync' });
+      if (ab.ahead > 0) {
+        sync.createSpan({ cls: 'claudian-commit-bar-sync-ahead', text: `↑${ab.ahead}` });
+      }
+      if (ab.behind > 0) {
+        sync.createSpan({ cls: 'claudian-commit-bar-sync-behind', text: `↓${ab.behind}` });
+      }
+    }
+
+    row.removeClass('claudian-hidden');
   }
 
   /** Enables/disables Commit + Push based on message, changes, and run state. */

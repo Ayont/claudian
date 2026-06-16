@@ -2,14 +2,15 @@
 .claudian-permission-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--cl-space-2);
   margin-left: auto;
-  padding-left: 12px;
-  padding-right: 8px;
+  padding-left: var(--cl-space-3);
+  padding-right: var(--cl-space-2);
 }
 
 .claudian-permission-label {
-  font-size: 11px;
+  font-family: var(--cl-font-ui);
+  font-size: var(--cl-text-xs);
   color: var(--text-muted);
   min-width: 28px;
 }
@@ -22,11 +23,13 @@
 .claudian-toggle-switch {
   width: 32px;
   height: 18px;
-  border-radius: 9px;
-  background: var(--background-modifier-border);
+  border-radius: var(--cl-radius-pill);
+  background: var(--cl-surface-sunken);
+  border: 1px solid var(--cl-border-subtle);
   cursor: pointer;
   position: relative;
-  transition: background 0.2s ease;
+  transition: background var(--cl-dur) var(--cl-ease),
+    border-color var(--cl-dur) var(--cl-ease);
   flex-shrink: 0;
 }
 
@@ -35,22 +38,42 @@
   position: absolute;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
+  border-radius: var(--cl-radius-pill);
   background: var(--text-muted);
-  top: 2px;
-  left: 2px;
-  transition: transform 0.2s ease, background 0.2s ease;
+  top: 1px;
+  left: 1px;
+  box-shadow: var(--cl-shadow-sm);
+  transition: transform var(--cl-dur) var(--cl-ease),
+    background var(--cl-dur) var(--cl-ease);
 }
 
 .claudian-toggle-switch:hover {
-  background: var(--background-modifier-hover);
+  border-color: var(--cl-border-strong);
+}
+
+.claudian-toggle-switch:hover::after {
+  background: var(--text-normal);
+}
+
+.claudian-toggle-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--cl-accent-softer);
+}
+
+.claudian-toggle-switch:active::after {
+  transform: scale(0.92);
 }
 
 .claudian-toggle-switch.active {
-  background: rgba(var(--claudian-brand-rgb), 0.3);
+  background: var(--cl-accent-soft);
+  border-color: var(--cl-accent-line);
 }
 
 .claudian-toggle-switch.active::after {
   transform: translateX(14px);
-  background: var(--claudian-brand);
+  background: var(--cl-accent);
+}
+
+.claudian-toggle-switch.active:active::after {
+  transform: translateX(14px) scale(0.92);
 }

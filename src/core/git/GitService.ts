@@ -71,6 +71,57 @@ export function parsePorcelainStatus(output: string): GitFileChange[] {
   return files;
 }
 
+/** Ahead/behind counts vs the configured upstream branch. */
+export interface AheadBehind {
+  /** Local commits not yet on upstream (`↑`). */
+  ahead: number;
+  /** Upstream commits not yet local (`↓`). */
+  behind: number;
+}
+
+/**
+ * Normalizes a git remote URL to a canonical `https://github.com/owner/repo`
+ * link. Handles SSH (`git@github.com:owner/repo.git`), the `ssh://` form, and
+ * `https://github.com/owner/repo(.git)`. Returns `null` for any non-GitHub
+ * remote so callers can fall back to a plain display.
+ *
+ * Pure and exported so it can be unit-tested in isolation.
+ */
+export function toGitHubHttpsUrl(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  // scp-like SSH: git@github.com:owner/repo(.git)
+  const scpMatch = trimmed.match(/^(?:[^@]+@)?github\.com:(.+)$/i);
+  if (scpMatch) {
+    return buildGitHubUrl(scpMatch[1]);
+  }
+
+  // URL forms: https://github.com/..., ssh://git@github.com/..., git://github.com/...
+  const urlMatch = trimmed.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/(.+)$/i);
+  if (urlMatch) {
+    return buildGitHubUrl(urlMatch[1]);
+  }
+
+  return null;
+}
+
+/** Strips a trailing `.git`/slash from an `owner/repo` path and rebuilds the canonical URL. */
+function buildGitHubUrl(path: string): string | null {
+  const cleaned = path
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '')
+    .trim();
+  const segments = cleaned.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+  const [owner, repo] = segments;
+  return `https://github.com/${owner}/${repo}`;
+}
+
 /**
  * Thin wrapper around the `git` CLI scoped to one working directory. Runs each
  * command as a child process with a PATH-enhanced env so `git` resolves even
@@ -157,5 +208,55 @@ export class GitService {
   async push(): Promise<GitResult> {
     const result = await this.run(['push']);
     return result.code === 0 ? { ok: true } : { ok: false, error: result.stderr.trim() || 'git push failed' };
+  }
+
+  /**
+   * URL of the `origin` remote, falling back to the first configured remote.
+   * Returns `null` when the repo has no remotes (or the command fails).
+   */
+  async getRemoteUrl(): Promise<string | null> {
+    const origin = await this.run(['remote', 'get-url', 'origin']);
+    if (origin.code === 0) {
+      const url = origin.stdout.trim();
+      if (url) {
+        return url;
+      }
+    }
+    // No `origin` — try the first remote name, if any.
+    const remotes = await this.run(['remote']);
+    if (remotes.code !== 0) {
+      return null;
+    }
+    const first = remotes.stdout.split('\n').map((line) => line.trim()).find(Boolean);
+    if (!first) {
+      return null;
+    }
+    const byName = await this.run(['remote', 'get-url', first]);
+    if (byName.code !== 0) {
+      return null;
+    }
+    return byName.stdout.trim() || null;
+  }
+
+  /**
+   * Ahead/behind commit counts of the current branch vs its upstream. Returns
+   * `null` when there is no upstream (e.g. a fresh branch) or the command fails.
+   */
+  async aheadBehind(): Promise<AheadBehind | null> {
+    const result = await this.run(['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
+    if (result.code !== 0) {
+      return null;
+    }
+    // Output is `<behind>\t<ahead>`: left side = upstream-only, right side = local-only.
+    const parts = result.stdout.trim().split(/\s+/);
+    if (parts.length < 2) {
+      return null;
+    }
+    const behind = Number.parseInt(parts[0], 10);
+    const ahead = Number.parseInt(parts[1], 10);
+    if (!Number.isFinite(behind) || !Number.isFinite(ahead)) {
+      return null;
+    }
+    return { ahead, behind };
   }
 }

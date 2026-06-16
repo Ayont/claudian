@@ -51,6 +51,14 @@ describe('session utilities', () => {
       expect(isSessionExpiredError(error)).toBe(true);
     });
 
+    it('matches "session id not found" (provider-switch resume of a foreign session id)', () => {
+      expect(isSessionExpiredError(new Error('session id not found'))).toBe(true);
+      expect(isSessionExpiredError(new Error('No conversation found with session ID abc123'))).toBe(true);
+      expect(isSessionExpiredError(new Error('The session was not found'))).toBe(true);
+      expect(isSessionExpiredError(new Error('session abc does not exist'))).toBe(true);
+      expect(isSessionExpiredError(new Error('no such session: abc'))).toBe(true);
+    });
+
     it('returns false for unrelated errors', () => {
       const error = new Error('Network timeout');
       expect(isSessionExpiredError(error)).toBe(false);

@@ -1,6 +1,7 @@
 import { createMockEl } from '@test/helpers/mockElement';
 
 import type { GitFileChange } from '@/core/git/GitService';
+import { toGitHubHttpsUrl } from '@/core/git/GitService';
 import { CommitBar, describeChangeCount, suggestCommitMessage } from '@/features/chat/ui/CommitBar';
 
 jest.mock('obsidian', () => ({
@@ -17,6 +18,8 @@ function createMockGit(overrides: Partial<Record<string, jest.Mock>> = {}) {
     status: jest.fn().mockResolvedValue({ branch: 'main', files: [makeFile('a.ts')] }),
     commitAll: jest.fn().mockResolvedValue({ ok: true }),
     push: jest.fn().mockResolvedValue({ ok: true }),
+    getRemoteUrl: jest.fn().mockResolvedValue(null),
+    aheadBehind: jest.fn().mockResolvedValue(null),
     ...overrides,
   };
 }
@@ -54,6 +57,29 @@ describe('describeChangeCount', () => {
     expect(describeChangeCount(0)).toBe('No changes');
     expect(describeChangeCount(1)).toBe('1 changed file');
     expect(describeChangeCount(3)).toBe('3 changed files');
+  });
+});
+
+describe('toGitHubHttpsUrl', () => {
+  test('normalizes scp-style SSH remotes', () => {
+    expect(toGitHubHttpsUrl('git@github.com:Ayont/ayontclaudian.git')).toBe(
+      'https://github.com/Ayont/ayontclaudian',
+    );
+  });
+
+  test('normalizes https remotes with and without .git', () => {
+    expect(toGitHubHttpsUrl('https://github.com/owner/repo.git')).toBe('https://github.com/owner/repo');
+    expect(toGitHubHttpsUrl('https://github.com/owner/repo')).toBe('https://github.com/owner/repo');
+  });
+
+  test('normalizes ssh:// remotes', () => {
+    expect(toGitHubHttpsUrl('ssh://git@github.com/owner/repo.git')).toBe('https://github.com/owner/repo');
+  });
+
+  test('returns null for non-GitHub or malformed remotes', () => {
+    expect(toGitHubHttpsUrl('git@gitlab.com:owner/repo.git')).toBeNull();
+    expect(toGitHubHttpsUrl('https://github.com/owner')).toBeNull();
+    expect(toGitHubHttpsUrl('')).toBeNull();
   });
 });
 
@@ -177,6 +203,35 @@ describe('CommitBar', () => {
     expect(() => new CommitBar(parent, git as never)).not.toThrow();
     await flush();
     expect(findByClass(parent, 'claudian-commit-bar').hasClass('claudian-hidden')).toBe(true);
+  });
+
+  test('shows the GitHub remote row with ahead/behind when a remote exists', async () => {
+    const parent = createMockEl();
+    const git = createMockGit({
+      getRemoteUrl: jest.fn().mockResolvedValue('git@github.com:Ayont/ayontclaudian.git'),
+      aheadBehind: jest.fn().mockResolvedValue({ ahead: 2, behind: 1 }),
+    });
+    new CommitBar(parent, git as never);
+    await flush();
+
+    const repoRow = findByClass(parent, 'claudian-commit-bar-repo');
+    expect(repoRow.hasClass('claudian-hidden')).toBe(false);
+    const link = findByClass(parent, 'claudian-commit-bar-remote');
+    expect(link.getAttribute('href')).toBe('https://github.com/Ayont/ayontclaudian');
+    expect(findByClass(parent, 'claudian-commit-bar-remote-name').textContent).toBe(
+      'github.com/Ayont/ayontclaudian',
+    );
+    expect(findByClass(parent, 'claudian-commit-bar-sync-ahead').textContent).toBe('↑2');
+    expect(findByClass(parent, 'claudian-commit-bar-sync-behind').textContent).toBe('↓1');
+  });
+
+  test('hides the remote row when there is no remote', async () => {
+    const parent = createMockEl();
+    const git = createMockGit();
+    new CommitBar(parent, git as never);
+    await flush();
+
+    expect(findByClass(parent, 'claudian-commit-bar-repo').hasClass('claudian-hidden')).toBe(true);
   });
 
   test('destroy removes the input listener and is idempotent', async () => {

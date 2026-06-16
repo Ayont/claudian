@@ -51,6 +51,67 @@
   font-size: var(--cl-text-xs);
 }
 
+/* ── Repo row: remote link + ahead/behind ──────────────────────── */
+.claudian-commit-bar-repo {
+  display: flex;
+  align-items: center;
+  gap: var(--cl-space-2);
+  min-width: 0;
+  font-size: var(--cl-text-xs);
+}
+
+.claudian-commit-bar-remote {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cl-space-1);
+  min-width: 0;
+  max-width: 100%;
+  color: var(--cl-accent);
+  text-decoration: none;
+  transition: color var(--cl-dur-fast) var(--cl-ease);
+}
+
+.claudian-commit-bar-remote:hover {
+  color: var(--cl-accent);
+  text-decoration: underline;
+}
+
+.claudian-commit-bar-remote-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.claudian-commit-bar-remote-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.claudian-commit-bar-remote-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--cl-font-mono);
+}
+
+.claudian-commit-bar-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cl-space-1);
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--cl-font-mono);
+  font-weight: 600;
+}
+
+.claudian-commit-bar-sync-ahead {
+  color: var(--color-green);
+}
+
+.claudian-commit-bar-sync-behind {
+  color: var(--color-orange, var(--text-muted));
+}
+
 /* ── Message row: input + suggest ──────────────────────────────── */
 .claudian-commit-bar-row {
   display: flex;
