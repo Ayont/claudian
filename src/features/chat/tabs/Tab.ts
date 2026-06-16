@@ -36,6 +36,7 @@ import { NavigationController } from '../controllers/NavigationController';
 import { SelectionController } from '../controllers/SelectionController';
 import { StreamController } from '../controllers/StreamController';
 import { MessageRenderer } from '../rendering/MessageRenderer';
+import { SwarmPanel } from '../rendering/SwarmPanel';
 import { cleanupThinkingBlock } from '../rendering/ThinkingBlockRenderer';
 import { findRewindContext } from '../rewind';
 import { BangBashService } from '../services/BangBashService';
@@ -533,6 +534,15 @@ export function createTab(options: TabCreateOptions): TabData {
 
   streamStatusBar = new StreamStatusBar(dom.inputContainerEl);
 
+  // Floating swarm overview: lists every subagent (sync + async) spawned this
+  // conversation, its live status / current tool, and jumps to its inline block
+  // on click. Hidden until the first subagent appears.
+  const swarmPanel = new SwarmPanel({
+    manager: subagentManager,
+    mountEl: dom.messagesEl.parentElement ?? dom.messagesEl,
+    getMessagesEl: () => dom.messagesEl,
+  });
+
   const isBound = !!conversation?.id;
   const restoredDraftModel = typeof options.draftModel === 'string'
     ? options.draftModel.trim()
@@ -585,6 +595,7 @@ export function createTab(options: TabCreateOptions): TabData {
       statusPanel: null,
       navigationSidebar: null,
       streamStatusBar,
+      swarmPanel,
     },
     dom,
     renderer: null,
@@ -1758,6 +1769,8 @@ export async function destroyTab(tab: TabData): Promise<void> {
   tab.ui.statusPanel = null;
   tab.ui.navigationSidebar?.destroy();
   tab.ui.navigationSidebar = null;
+  tab.ui.swarmPanel?.destroy();
+  tab.ui.swarmPanel = null;
   // Closes the model dropdown and removes its document-level dismiss listeners
   // (pointerdown/keydown), preventing a leak if a tab is closed while open.
   tab.ui.modelSelector?.destroy();
