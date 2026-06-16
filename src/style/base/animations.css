@@ -74,6 +74,20 @@
   }
 }
 
+/* Live "this provider is working" glow for the streaming tab badge. The glow
+   color comes from --claudian-brand-rgb, which is set per [data-provider], so
+   each provider pulses in its own accent. */
+@keyframes cl-tab-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 2px 0 rgba(var(--claudian-brand-rgb), 0.35);
+  }
+
+  50% {
+    box-shadow: 0 0 7px 1px rgba(var(--claudian-brand-rgb), 0.85);
+  }
+}
+
 /* Accessibility: honor the OS "reduce motion" setting — neutralize all motion
    inside the plugin (including the infinite spin/pulse) without touching the
    rest of Obsidian. */

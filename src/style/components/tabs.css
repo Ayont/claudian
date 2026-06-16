@@ -52,6 +52,7 @@
 
 .claudian-tab-badge-streaming {
   border-color: var(--claudian-brand, #da7756);
+  animation: cl-tab-pulse 1.6s var(--cl-ease) infinite;
 }
 
 .claudian-tab-badge-streaming[data-provider="claude"] {
