@@ -74,3 +74,9 @@
 .claudian-context-meter.warning .claudian-context-meter-percent {
   color: #E57373;
 }
+
+/* Estimated usage (Kimi/Antigravity report no exact token counts): muted to
+   signal it is approximate. Warning (>80%) still takes precedence. */
+.claudian-context-meter.estimated:not(.warning) .claudian-context-meter-percent {
+  color: var(--text-muted);
+}

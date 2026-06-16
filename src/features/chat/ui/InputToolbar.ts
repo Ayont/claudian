@@ -1256,8 +1256,14 @@ export class ContextUsageMeter {
       this.fillPath.setAttribute('stroke-dashoffset', String(this.circumference - fillLength));
     }
 
+    // Providers that report no token counts (Kimi, Antigravity) send an
+    // estimated usage; signal that with a leading "~" and a tooltip note so the
+    // meter isn't mistaken for an exact provider-reported figure.
+    const approximate = usage.contextWindowIsAuthoritative === false;
+    this.container.toggleClass('estimated', approximate);
+
     if (this.percentEl) {
-      this.percentEl.setText(`${usage.percentage}%`);
+      this.percentEl.setText(`${approximate ? '~' : ''}${usage.percentage}%`);
     }
 
     // Toggle warning class for > 80%
@@ -1268,7 +1274,7 @@ export class ContextUsageMeter {
     }
 
     // Set tooltip with detailed usage
-    let tooltip = `${this.formatTokens(usage.contextTokens)} / ${this.formatTokens(usage.contextWindow)}`;
+    let tooltip = `${approximate ? 'Estimated · ' : ''}${this.formatTokens(usage.contextTokens)} / ${this.formatTokens(usage.contextWindow)}`;
     if (usage.percentage > 80) {
       tooltip += ' (Approaching limit, run `/compact` to continue)';
     }
