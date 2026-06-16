@@ -5,6 +5,7 @@ import { expandProviderCommandInput } from '../../../core/providers/commands/exp
 import { getRuntimeEnvironmentText } from '../../../core/providers/providerEnvironment';
 import { ProviderWorkspaceRegistry } from '../../../core/providers/ProviderWorkspaceRegistry';
 import type { ProviderCapabilities } from '../../../core/providers/types';
+import { buildEstimatedUsageInfo, estimateTokensForTexts } from '../../../core/providers/usage/estimateUsage';
 import type { ChatRuntime } from '../../../core/runtime/ChatRuntime';
 import type {
   ApprovalCallback,
@@ -38,7 +39,7 @@ import {
   type WindowsCmdShimSpawnSpec,
 } from '../../../utils/windowsCmdShim';
 import { KIMI_PROVIDER_CAPABILITIES } from '../capabilities';
-import { resolveKimiModelSelection } from '../modelOptions';
+import { getKimiModelContextWindow, resolveKimiModelSelection } from '../modelOptions';
 import { parseKimiStreamLine } from '../normalization/streamEvents';
 import {
   createKimiStreamState,
@@ -127,7 +128,7 @@ export class KimiChatRuntime implements ChatRuntime {
 
   async *query(
     turn: PreparedChatTurn,
-    _conversationHistory?: ChatMessage[],
+    conversationHistory?: ChatMessage[],
     queryOptions?: ChatRuntimeQueryOptions,
   ): AsyncGenerator<StreamChunk> {
     this.currentTurnMetadata = {};
@@ -259,7 +260,11 @@ export class KimiChatRuntime implements ChatRuntime {
         stdoutBuffer = '';
       }
 
+      let responseText = '';
       for (const chunk of pendingChunks) {
+        if ((chunk.type === 'text' || chunk.type === 'thinking') && typeof chunk.content === 'string') {
+          responseText += chunk.content;
+        }
         yield chunk;
       }
       pendingChunks.length = 0;
@@ -282,6 +287,22 @@ export class KimiChatRuntime implements ChatRuntime {
       }
 
       this.currentTurnMetadata.wasSent = true;
+      // Estimated context-window feedback: kimi-cli reports no token usage, so
+      // approximate from the conversation history + this turn's prompt/response.
+      const contextTokens = estimateTokensForTexts([
+        ...(conversationHistory ?? []).map((message) => message.content ?? ''),
+        promptText,
+        responseText,
+      ]);
+      yield {
+        type: 'usage',
+        usage: buildEstimatedUsageInfo({
+          contextTokens,
+          contextWindow: getKimiModelContextWindow(model),
+          model: model || undefined,
+        }),
+        sessionId: this.sessionId,
+      };
       yield { type: 'done' };
     } finally {
       if (this.activeProcess === proc) {

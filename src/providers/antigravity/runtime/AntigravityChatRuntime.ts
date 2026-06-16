@@ -6,6 +6,7 @@ import { expandProviderCommandInput } from '../../../core/providers/commands/exp
 import { getRuntimeEnvironmentText } from '../../../core/providers/providerEnvironment';
 import { ProviderWorkspaceRegistry } from '../../../core/providers/ProviderWorkspaceRegistry';
 import type { ProviderCapabilities } from '../../../core/providers/types';
+import { buildEstimatedUsageInfo, estimateTokensForTexts } from '../../../core/providers/usage/estimateUsage';
 import type { ChatRuntime } from '../../../core/runtime/ChatRuntime';
 import type {
   ApprovalCallback,
@@ -148,7 +149,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
 
   async *query(
     turn: PreparedChatTurn,
-    _conversationHistory?: ChatMessage[],
+    conversationHistory?: ChatMessage[],
     _queryOptions?: ChatRuntimeQueryOptions,
   ): AsyncGenerator<StreamChunk> {
     this.currentTurnMetadata = {};
@@ -259,6 +260,13 @@ export class AntigravityChatRuntime implements ChatRuntime {
     const tailState: AntigravityTailState = createAntigravityTailState();
     let tailCursor = priorTranscriptLineCount;
     let emittedAnyTextFromTranscript = false;
+    let responseText = '';
+
+    const accumulateResponse = (chunk: StreamChunk): void => {
+      if ((chunk.type === 'text' || chunk.type === 'thinking') && typeof chunk.content === 'string') {
+        responseText += chunk.content;
+      }
+    };
 
     const drainTranscript = (): StreamChunk[] => {
       if (!this.conversationId && previousBrainIds) {
@@ -305,6 +313,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
           sleep(TRANSCRIPT_POLL_INTERVAL_MS).then(() => ({ done: false as const })),
         ]);
         for (const chunk of drainTranscript()) {
+          accumulateResponse(chunk);
           yield chunk;
         }
         if (settled.done) {
@@ -318,6 +327,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
       // Settle: let agy finish writing the transcript, then drain the remainder.
       await sleep(POST_EXIT_SETTLE_MS);
       for (const chunk of drainTranscript()) {
+        accumulateResponse(chunk);
         yield chunk;
       }
 
@@ -342,11 +352,25 @@ export class AntigravityChatRuntime implements ChatRuntime {
       if (!emittedAnyTextFromTranscript) {
         const text = stdout.trim();
         if (text) {
+          responseText += text;
           yield { type: 'text', content: text };
         }
       }
 
       this.currentTurnMetadata.wasSent = true;
+      // Estimated context-window feedback: agy reports no token usage, so
+      // approximate from the conversation history + this turn's prompt/response.
+      // 1,000,000 matches AntigravityChatUIConfig's default context window.
+      const contextTokens = estimateTokensForTexts([
+        ...(conversationHistory ?? []).map((message) => message.content ?? ''),
+        prompt,
+        responseText,
+      ]);
+      yield {
+        type: 'usage',
+        usage: buildEstimatedUsageInfo({ contextTokens, contextWindow: 1_000_000 }),
+        sessionId: this.conversationId,
+      };
       yield { type: 'done' };
     } finally {
       if (this.activeProcess === proc) {
