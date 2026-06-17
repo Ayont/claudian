@@ -11,8 +11,11 @@ describe('ProviderRegistry.getAggregatedModelOptions (unified model dropdown)', 
     const aggregated = ProviderRegistry.getAggregatedModelOptions(settings);
     const claudeOnly = ProviderRegistry.getChatUIConfig('claude').getModelOptions(settings);
 
-    // Same set of model values as Claude alone — single-provider output is unchanged.
-    expect(aggregated.map(o => o.value)).toEqual(claudeOnly.map(o => o.value));
+    // Same set of model values as Claude alone, now sorted alphabetically by label.
+    expect(new Set(aggregated.map(o => o.value))).toEqual(new Set(claudeOnly.map(o => o.value)));
+    expect(aggregated.map(o => o.value)).toEqual(
+      [...claudeOnly.map(o => o.value)].sort((a, b) => a.localeCompare(b)),
+    );
     // All options carry exactly one group (the Claude display name).
     const groups = new Set(aggregated.map(o => o.group));
     expect(groups.size).toBe(1);

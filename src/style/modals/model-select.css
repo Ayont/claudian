@@ -1,0 +1,79 @@
+.claudian-model-select-modal .modal-content {
+  padding: 0;
+}
+
+.claudian-model-select-search {
+  padding: var(--cl-space-2) var(--cl-space-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.claudian-model-select-search-input {
+  width: 100%;
+  padding: var(--cl-space-2) var(--cl-space-3);
+  font-size: var(--cl-font-size-sm);
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--cl-radius-md);
+  outline: none;
+}
+
+.claudian-model-select-search-input:focus {
+  border-color: var(--claudian-brand);
+}
+
+.claudian-model-select-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--cl-space-1) 0;
+}
+
+.claudian-model-select-group {
+  padding: var(--cl-space-2) var(--cl-space-3);
+  font-size: var(--cl-font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.claudian-model-select-option {
+  display: flex;
+  align-items: center;
+  gap: var(--cl-space-2);
+  padding: var(--cl-space-2) var(--cl-space-3);
+  cursor: pointer;
+  color: var(--text-normal);
+  transition: background-color 0.1s ease;
+}
+
+.claudian-model-select-option:hover,
+.claudian-model-select-option.is-selected {
+  background: var(--background-modifier-hover);
+}
+
+.claudian-model-select-option.is-selected .claudian-model-select-option-label {
+  font-weight: 600;
+  color: var(--claudian-brand);
+}
+
+.claudian-model-select-option-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.claudian-model-select-option-label {
+  font-size: var(--cl-font-size-sm);
+}
+
+.claudian-model-select-empty {
+  padding: var(--cl-space-4) var(--cl-space-3);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--cl-font-size-sm);
+}

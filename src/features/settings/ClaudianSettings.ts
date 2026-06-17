@@ -194,7 +194,7 @@ export class ClaudianSettingTab extends PluginSettingTab {
     // position, so this panel may open already scrolled — hiding the first
     // section (e.g. a provider's "Enable" toggle). Reset the scrolling ancestor
     // to the top once layout has settled.
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       let node: HTMLElement | null = containerEl;
       for (let depth = 0; node && depth < 8; depth += 1) {
         node.scrollTop = 0;

@@ -3489,7 +3489,7 @@ describe('Tab - Blank Tab Model Selector', () => {
     } as any));
 
     const result = getBlankTabModelOptions({ codexEnabled: false });
-    expect(result).toEqual(claudeModels.map(m => ({ ...m, group: 'Claude' })));
+    expect(result).toEqual(claudeModels.map(m => ({ ...m, group: 'Claude', providerId: 'claude', providerIcon: undefined })));
   });
 
   it('returns Claude + Codex models when Codex is enabled', () => {
@@ -3512,8 +3512,8 @@ describe('Tab - Blank Tab Model Selector', () => {
 
     const result = getBlankTabModelOptions({ codexEnabled: true });
     expect(result).toEqual([
-      ...codexModels.map(m => ({ ...m, group: 'Codex' })),
-      ...claudeModels.map(m => ({ ...m, group: 'Claude' })),
+      ...codexModels.map(m => ({ ...m, group: 'Codex', providerId: 'codex', providerIcon: undefined })),
+      ...claudeModels.map(m => ({ ...m, group: 'Claude', providerId: 'claude', providerIcon: undefined })),
     ]);
   });
 });

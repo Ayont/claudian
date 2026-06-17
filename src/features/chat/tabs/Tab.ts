@@ -944,6 +944,7 @@ function initializeInputToolbar(
   };
 
   const toolbarComponents = createInputToolbar(inputToolbar, {
+    app: plugin.app,
     getUIConfig: () => {
       if (tab.lifecycleState === 'blank') {
         return blankTabUIConfigProxy();

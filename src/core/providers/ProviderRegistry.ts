@@ -206,12 +206,21 @@ export class ProviderRegistry {
       const uiConfig = this.getChatUIConfig(providerId);
       const providerIcon = uiConfig.getProviderIcon?.() ?? undefined;
       const group = this.getProviderDisplayName(providerId);
-      return uiConfig.getModelOptions(settings).map((model) => ({
-        ...model,
-        group,
-        providerIcon,
-        ...(uiConfig.isDefaultModel?.(model.value) ? { isDefault: true } : {}),
-      }));
+      return uiConfig
+        .getModelOptions(settings)
+        .map((model) => ({
+          ...model,
+          group,
+          providerIcon,
+          providerId,
+          ...(uiConfig.isDefaultModel?.(model.value) ? { isDefault: true } : {}),
+        }))
+        .sort((a, b) => {
+          if (a.isDefault !== b.isDefault) {
+            return a.isDefault ? -1 : 1;
+          }
+          return a.label.localeCompare(b.label);
+        });
     });
   }
 }

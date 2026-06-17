@@ -180,7 +180,18 @@ export class TextAreaComponent {
 }
 
 export class Modal {
+  static instances: Modal[] = [];
+
   app: any;
+  titleEl: any = {
+    setText: jest.fn(),
+    empty: jest.fn(),
+    addClass: jest.fn(),
+  };
+  modalEl: any = {
+    addClass: jest.fn(),
+    removeClass: jest.fn(),
+  };
   containerEl: any = {
     createDiv: jest.fn().mockReturnValue({
       createEl: jest.fn().mockReturnValue({ addEventListener: jest.fn() }),
@@ -212,10 +223,12 @@ export class Modal {
     }),
     empty: jest.fn(),
     addClass: jest.fn(),
+    createEl: jest.fn().mockReturnValue({ addEventListener: jest.fn() }),
   };
 
   constructor(app: any) {
     this.app = app;
+    Modal.instances.push(this);
   }
 
   open = jest.fn();

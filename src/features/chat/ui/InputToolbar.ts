@@ -1,4 +1,4 @@
-import { Notice, setIcon } from 'obsidian';
+import { type App,Notice, setIcon } from 'obsidian';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -16,9 +16,10 @@ import type {
   ManagedMcpServer,
   UsageInfo,
 } from '../../../core/types';
-import { appendCheckIcon, appendMcpIcon, createProviderIconSvg } from '../../../shared/icons';
+import { appendCheckIcon, appendMcpIcon } from '../../../shared/icons';
 import { filterValidPaths, findConflictingPath, isDuplicatePath, isValidDirectoryPath, validateDirectoryPath } from '../../../utils/externalContext';
 import { expandHomePath, normalizePathForFilesystem } from '../../../utils/path';
+import { ModelSelectModal } from './ModelSelectModal';
 
 interface ElectronOpenDialogResult {
   canceled: boolean;
@@ -47,6 +48,7 @@ export interface ToolbarSettings {
 }
 
 export interface ToolbarCallbacks {
+  app: App;
   onModelChange: (model: string) => Promise<void>;
   onModeChange: (mode: string) => Promise<void>;
   onThinkingBudgetChange: (budget: string) => Promise<void>;
@@ -62,22 +64,17 @@ export interface ToolbarCallbacks {
 export class ModelSelector {
   private container: HTMLElement;
   private buttonEl: HTMLElement | null = null;
-  private dropdownEl: HTMLElement | null = null;
-  private portalEl: HTMLElement | null = null;
-  private isOpen = false;
   private callbacks: ToolbarCallbacks;
-  private readonly boundOutsideClick = (event: Event) => this.handleOutsideClick(event);
-  private readonly boundKeydown = (event: Event) => this.handleKeydown(event);
-  private readonly boundReposition = () => this.positionDropdown();
+
   constructor(parentEl: HTMLElement, callbacks: ToolbarCallbacks) {
     this.callbacks = callbacks;
     this.container = parentEl.createDiv({ cls: 'claudian-model-selector' });
     this.render();
   }
 
-  /** Returns the dropdown element regardless of whether it is currently portaled. */
+  /** @deprecated The model picker is now a centered Obsidian modal. */
   getDropdownEl(): HTMLElement | null {
-    return this.dropdownEl;
+    return null;
   }
 
   private getAvailableModels() {
@@ -97,19 +94,31 @@ export class ModelSelector {
     this.buttonEl.setAttribute('tabindex', '0');
     this.buttonEl.addEventListener('click', (event) => {
       event.stopPropagation();
-      this.toggle();
+      this.openModal();
     });
     this.buttonEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        this.toggle();
+        this.openModal();
       }
     });
     this.updateDisplay();
+  }
 
-    this.dropdownEl = this.container.createDiv({ cls: 'claudian-model-dropdown' });
-    this.dropdownEl.setAttribute('role', 'listbox');
-    this.renderOptions();
+  private openModal(): void {
+    const currentModel = this.callbacks.getSettings().model;
+    const models = sortModelOptions(this.getAvailableModels(), currentModel);
+    new ModelSelectModal(
+      this.callbacks.app,
+      models,
+      currentModel,
+      (modelValue) => {
+        runToolbarAction(async () => {
+          await this.callbacks.onModelChange(modelValue);
+          this.updateDisplay();
+        }, 'Failed to change model');
+      },
+    ).open();
   }
 
   updateDisplay() {
@@ -134,304 +143,37 @@ export class ModelSelector {
     return displayModel?.label ?? null;
   }
 
-  renderOptions() {
-    if (!this.dropdownEl) return;
-    this.dropdownEl.empty();
-
-    const currentModel = this.callbacks.getSettings().model;
-    const models = sortModelOptions(this.getAvailableModels(), currentModel);
-
-    let lastGroup: string | undefined;
-    for (const model of models) {
-      if (model.group && model.group !== lastGroup) {
-        const separator = this.dropdownEl.createDiv({ cls: 'claudian-model-group' });
-        separator.setText(model.group);
-        lastGroup = model.group;
-      }
-
-      const option = this.dropdownEl.createDiv({ cls: 'claudian-model-option' });
-      if (model.value === currentModel) {
-        option.addClass('selected');
-      }
-
-      const icon = model.providerIcon ?? this.callbacks.getUIConfig().getProviderIcon?.();
-      if (icon) {
-        option.appendChild(createProviderIconSvg(icon, {
-          className: 'claudian-model-provider-icon',
-          height: 12,
-          ownerDocument: option.ownerDocument,
-          width: 12,
-        }));
-      }
-      option.createSpan({ text: model.label });
-      if (model.description) {
-        option.setAttribute('title', model.description);
-      }
-
-      option.setAttribute('role', 'option');
-      option.setAttribute('tabindex', '0');
-      option.setAttribute('aria-selected', model.value === currentModel ? 'true' : 'false');
-      option.setAttribute('data-model-value', model.value);
-
-      option.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.selectModel(model.value);
-      });
-
-      option.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          e.stopPropagation();
-          this.selectModel(model.value);
-        }
-      });
-    }
-  }
-
-  private toggle(): void {
-    if (this.isOpen) {
-      this.close();
-    } else {
-      this.open();
-    }
-  }
-
-  private open(): void {
-    if (this.isOpen || !this.dropdownEl) {
-      return;
-    }
-    this.isOpen = true;
-    // Re-render so the option list and the current selection are fresh on open.
-    this.renderOptions();
-    this.dropdownEl.addClass('claudian-open');
-    this.buttonEl?.addClass('claudian-model-btn--open');
-    this.buttonEl?.setAttribute('aria-expanded', 'true');
-    this.attachPortal();
-    this.positionDropdown();
-    const doc = this.container.ownerDocument;
-    const win = doc?.defaultView ?? (typeof window !== 'undefined' ? window : null);
-    win?.addEventListener?.('resize', this.boundReposition);
-    win?.addEventListener?.('scroll', this.boundReposition, true);
-    if (!doc) {
-      return;
-    }
-    // Use click (not pointerdown) for the outside dismiss listener. Pointerdown
-    // fired during the option click sequence could race with the dropdown's own
-    // close/reposition logic and swallow the model change in Obsidian's bottom
-    // toolbar / sidebar layout. Click is the natural boundary for "the user
-    // finished this interaction".
-    doc.addEventListener('click', this.boundOutsideClick, true);
-    doc.addEventListener('keydown', this.boundKeydown, true);
-  }
-
-  private attachPortal(): void {
-    if (!this.dropdownEl) {
-      return;
-    }
-    const doc = this.container.ownerDocument;
-    const body = doc?.body;
-    if (!body) {
-      return;
-    }
-    if (!this.portalEl) {
-      this.portalEl = doc.createDiv({ cls: 'claudian-model-dropdown-portal' });
-    }
-    // Inherit the active provider theme from the surrounding Claudian view so
-    // brand colors stay consistent while the dropdown lives outside .claudian-container.
-    const themeRoot = this.container.closest('.claudian-container');
-    if (themeRoot) {
-      this.portalEl.addClass('claudian-container');
-      const provider = themeRoot.getAttribute('data-provider');
-      if (provider) {
-        this.portalEl.setAttribute('data-provider', provider);
-      }
-    }
-    body.appendChild(this.portalEl);
-    this.portalEl.appendChild(this.dropdownEl);
-  }
-
-  private detachPortal(): void {
-    if (!this.dropdownEl || !this.portalEl) {
-      return;
-    }
-    this.container.appendChild(this.dropdownEl);
-    this.portalEl.removeClass('claudian-container');
-    this.portalEl.removeAttribute('data-provider');
-    this.portalEl.remove();
-    this.portalEl = null;
-  }
-
-  private selectModel(modelValue: string): void {
-    this.close();
-    runToolbarAction(async () => {
-      await this.callbacks.onModelChange(modelValue);
-      this.updateDisplay();
-      this.renderOptions();
-    }, 'Failed to change model');
+  /** Kept for API compatibility; the modal rebuilds its options on every open. */
+  renderOptions(): void {
+    // no-op
   }
 
   close(): void {
-    if (!this.isOpen) {
-      return;
-    }
-    this.isOpen = false;
-    this.dropdownEl?.removeClass('claudian-open');
-    this.buttonEl?.removeClass('claudian-model-btn--open');
-    this.buttonEl?.setAttribute('aria-expanded', 'false');
-    const doc = this.container.ownerDocument;
-    doc?.removeEventListener('click', this.boundOutsideClick, true);
-    doc?.removeEventListener('keydown', this.boundKeydown, true);
-    const win = doc?.defaultView ?? (typeof window !== 'undefined' ? window : null);
-    win?.removeEventListener?.('resize', this.boundReposition);
-    win?.removeEventListener?.('scroll', this.boundReposition, true);
-    this.clearDropdownPosition();
-    this.detachPortal();
+    // no-op: the modal manages its own lifecycle.
   }
 
   destroy(): void {
     this.close();
   }
-
-  private handleOutsideClick(event: Event): void {
-    const target = event.target;
-    if (target instanceof Node && (
-      this.container.contains(target)
-      || (this.dropdownEl && this.dropdownEl.contains(target))
-    )) {
-      return;
-    }
-    this.close();
-  }
-
-  private handleKeydown(event: Event): void {
-    if ((event as KeyboardEvent).key === 'Escape') {
-      event.stopPropagation();
-      this.close();
-    }
-  }
-
-  private positionDropdown(): void {
-    if (!this.dropdownEl || !this.buttonEl || !this.isOpen) {
-      return;
-    }
-
-    // The portal fills the viewport (or Obsidian's fixed containing block when
-    // transforms are applied to root elements). Measure both the portal and the
-    // button in the same coordinate system and position the dropdown relative to
-    // the portal so it never drifts because of transformed ancestors.
-    if (!this.portalEl) {
-      return;
-    }
-    const portalRect = this.portalEl.getBoundingClientRect();
-    const rect = this.buttonEl.getBoundingClientRect();
-    const margin = 12;
-    const gap = 8;
-    const minMenuWidth = 280;
-    const maxMenuWidth = 780;
-    const maxMenuHeight = 560;
-    const minMenuHeight = 220;
-
-    const portalWidth = portalRect.width;
-    const portalHeight = portalRect.height;
-
-    // Available space around the button, measured from the portal edges.
-    const spaceLeft = rect.left - portalRect.left - gap - margin;
-    const spaceRight = portalRect.right - rect.right - gap - margin;
-    const spaceAbove = rect.top - portalRect.top - gap - margin;
-    const spaceBelow = portalRect.bottom - rect.bottom - gap - margin;
-
-    // The button lives in the input toolbar, which is normally at the bottom of
-    // the view. Pop the menu to the TOP-LEFT of the button so it is always
-    // visible and never clipped by the bottom of the window.
-    const openLeft = rect.left > portalRect.left + portalWidth * 0.45 || spaceLeft >= spaceRight;
-    const openAbove = rect.top > portalRect.top + portalHeight * 0.45 || spaceAbove >= spaceBelow;
-
-    let left: number | undefined;
-    let right: number | undefined;
-    let top: number | undefined;
-    let bottom: number | undefined;
-    let horizontalOrigin: 'left' | 'right' = 'left';
-
-    if (openLeft) {
-      const desiredWidth = Math.min(maxMenuWidth, Math.max(minMenuWidth, spaceLeft));
-      right = portalRect.right - rect.left + gap;
-      // Clamp so the left edge does not run past the left margin.
-      right = Math.max(margin, Math.min(right, portalWidth - margin - desiredWidth));
-      this.dropdownEl.style.width = `${Math.round(desiredWidth)}px`;
-      horizontalOrigin = 'right';
-    } else {
-      const desiredWidth = Math.min(maxMenuWidth, Math.max(minMenuWidth, spaceRight));
-      left = rect.left - portalRect.left + gap;
-      left = Math.max(margin, Math.min(left, portalWidth - margin - desiredWidth));
-      this.dropdownEl.style.width = `${Math.round(desiredWidth)}px`;
-    }
-
-    if (openAbove) {
-      const desiredMaxHeight = Math.min(maxMenuHeight, Math.max(minMenuHeight, spaceAbove));
-      bottom = portalRect.bottom - rect.top + gap;
-      // Clamp so the top edge does not run past the top margin.
-      bottom = Math.max(margin, Math.min(bottom, portalHeight - margin - desiredMaxHeight));
-      this.dropdownEl.style.maxHeight = `${Math.round(desiredMaxHeight)}px`;
-    } else {
-      const desiredMaxHeight = Math.min(maxMenuHeight, Math.max(minMenuHeight, spaceBelow));
-      top = rect.bottom - portalRect.top + gap;
-      top = Math.max(margin, Math.min(top, portalHeight - margin - desiredMaxHeight));
-      this.dropdownEl.style.maxHeight = `${Math.round(desiredMaxHeight)}px`;
-    }
-
-    this.dropdownEl.style.position = 'absolute';
-    this.dropdownEl.style.left = left !== undefined ? `${Math.round(left)}px` : '';
-    this.dropdownEl.style.right = right !== undefined ? `${Math.round(right)}px` : '';
-    this.dropdownEl.style.top = top !== undefined ? `${Math.round(top)}px` : '';
-    this.dropdownEl.style.bottom = bottom !== undefined ? `${Math.round(bottom)}px` : '';
-
-    this.dropdownEl.toggleClass('claudian-model-dropdown--below', !openAbove);
-    this.dropdownEl.toggleClass('claudian-model-dropdown--above', openAbove);
-    this.dropdownEl.toggleClass('claudian-model-dropdown--right', horizontalOrigin === 'right');
-  }
-
-  private clearDropdownPosition(): void {
-    if (!this.dropdownEl) {
-      return;
-    }
-    this.dropdownEl.style.position = '';
-    this.dropdownEl.style.left = '';
-    this.dropdownEl.style.right = '';
-    this.dropdownEl.style.top = '';
-    this.dropdownEl.style.bottom = '';
-    this.dropdownEl.style.width = '';
-    this.dropdownEl.style.maxWidth = '';
-    this.dropdownEl.style.maxHeight = '';
-    this.dropdownEl.removeClass('claudian-model-dropdown--above');
-    this.dropdownEl.removeClass('claudian-model-dropdown--below');
-    this.dropdownEl.removeClass('claudian-model-dropdown--right');
-  }
 }
 
 /**
- * Sort model options deterministically:
- * 1. Current provider's group first.
- * 2. Remaining groups alphabetically.
- * 3. Default models before custom/env models.
- * 4. Alphabetically by label.
+ * Sort model options deterministically for the modal:
+ * 1. Current provider's models first.
+ * 2. Remaining providers in their registered priority order (blankTabOrder).
+ * 3. Within a provider: default models first, then alphabetically by label.
+ *
+ * The aggregated model list is already grouped/sorted by provider, so this
+ * keeps that order stable and only hoists the active provider to the top.
  */
 function sortModelOptions(models: ProviderUIOption[], currentModelValue: string): ProviderUIOption[] {
-  const currentGroup = models.find((model) => model.value === currentModelValue)?.group;
+  const currentProviderId = models.find((model) => model.value === currentModelValue)?.providerId;
   return [...models].sort((a, b) => {
-    const aIsCurrent = a.group === currentGroup;
-    const bIsCurrent = b.group === currentGroup;
+    const aIsCurrent = a.providerId === currentProviderId;
+    const bIsCurrent = b.providerId === currentProviderId;
     if (aIsCurrent && !bIsCurrent) return -1;
     if (!aIsCurrent && bIsCurrent) return 1;
-
-    const groupA = a.group ?? '';
-    const groupB = b.group ?? '';
-    if (groupA !== groupB) return groupA.localeCompare(groupB);
-
-    if (a.isDefault !== b.isDefault) {
-      return a.isDefault ? -1 : 1;
-    }
-
-    return a.label.localeCompare(b.label);
+    return 0;
   });
 }
 

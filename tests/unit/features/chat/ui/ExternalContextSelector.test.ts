@@ -1,15 +1,10 @@
 import { createMockEl } from '@test/helpers/mockElement';
 import * as fs from 'fs';
+import { App } from 'obsidian';
 import * as os from 'os';
 import * as path from 'path';
 
 import { ExternalContextSelector } from '@/features/chat/ui/InputToolbar';
-
-// Mock obsidian
-jest.mock('obsidian', () => ({
-  Notice: jest.fn(),
-  setIcon: jest.fn(),
-}));
 
 // Mock fs
 jest.mock('fs');
@@ -17,6 +12,7 @@ jest.mock('fs');
 // Mock callbacks
 function createMockCallbacks() {
   return {
+    app: new App(),
     onModelChange: jest.fn(),
     onModeChange: jest.fn().mockResolvedValue(undefined),
     onThinkingBudgetChange: jest.fn(),
