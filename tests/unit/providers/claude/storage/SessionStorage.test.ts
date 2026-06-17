@@ -637,8 +637,13 @@ describe('SessionStorage', () => {
       expect(metadata.usage).toEqual(usage);
       expect(metadata.titleGenerationStatus).toBe('success');
 
-      // Should not include messages
-      expect(metadata).not.toHaveProperty('messages');
+      // Messages are persisted as a fallback for all providers (native-history
+      // providers like Kimi rely on them; plugin-history providers hydrate
+      // over them from providerState).
+      expect(metadata.messages).toEqual(conversation.messages.map((message) => ({
+        ...message,
+        images: undefined,
+      })));
     });
 
     it('includes forkSource when set', () => {

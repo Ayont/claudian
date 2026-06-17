@@ -118,6 +118,8 @@ export interface SessionMetadata {
   sessionId?: string | null;
   /** Opaque provider-owned state bag. */
   providerState?: Record<string, unknown>;
+  /** Fallback messages for providers without SDK-native message storage. */
+  messages?: ChatMessage[];
   currentNote?: string;
   externalContextPaths?: string[];
   enabledMcpServers?: string[];

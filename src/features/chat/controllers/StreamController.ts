@@ -340,6 +340,19 @@ export class StreamController {
       return;
     }
 
+    // TodoWrite: update panel state immediately (side effect).
+    if (chunk.name === TOOL_TODO_WRITE) {
+      const todos = parseTodoInput(chunk.input);
+      if (todos) {
+        this.deps.state.currentTodos = todos;
+      }
+      // Kimi synthesizes TodoWrite events purely to drive the status panel;
+      // skip the inline tool card so the chat stream stays clean.
+      if (chunk.input?.__panelOnly === true) {
+        return;
+      }
+    }
+
     // Create new tool call
     const toolCall: ToolCallInfo = {
       id: chunk.id,
@@ -354,14 +367,6 @@ export class StreamController {
     // Add to contentBlocks for ordering
     msg.contentBlocks = msg.contentBlocks || [];
     msg.contentBlocks.push({ type: 'tool_use', toolId: chunk.id });
-
-    // TodoWrite: update panel state immediately (side effect), but still buffer render
-    if (chunk.name === TOOL_TODO_WRITE) {
-      const todos = parseTodoInput(chunk.input);
-      if (todos) {
-        this.deps.state.currentTodos = todos;
-      }
-    }
 
     // Track Write to provider plan directory for plan mode (used by approve-new-session)
     if (chunk.name === TOOL_WRITE) {

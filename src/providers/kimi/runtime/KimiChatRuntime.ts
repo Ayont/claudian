@@ -370,7 +370,7 @@ export class KimiChatRuntime implements ChatRuntime {
    */
   private trackToolCallAsTodo(chunk: StreamChunk): StreamChunk | null {
     if (chunk.type === 'tool_use' && chunk.name !== TOOL_TODO_WRITE) {
-      const description = describeToolName(chunk.name);
+      const description = describeToolUse(chunk.name, chunk.input);
       const existingIndex = this.currentTodos.findIndex((todo) => todo.content === description.content);
       if (existingIndex >= 0) {
         this.currentTodos[existingIndex] = {
@@ -385,7 +385,7 @@ export class KimiChatRuntime implements ChatRuntime {
     }
 
     if (chunk.type === 'tool_result') {
-      const description = describeToolNameForResult(chunk.content);
+      const description = describeToolResult(chunk.id, chunk.content, this.currentTodos);
       const matching = this.currentTodos.findIndex((todo) =>
         todo.status === 'in_progress' && todo.content === description.content
       );
@@ -403,7 +403,7 @@ export class KimiChatRuntime implements ChatRuntime {
       type: 'tool_use',
       id: `kimi-todo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: TOOL_TODO_WRITE,
-      input: { todos: [...this.currentTodos] },
+      input: { todos: [...this.currentTodos], __panelOnly: true },
     };
   }
 
@@ -571,24 +571,59 @@ const TOOL_NAME_DESCRIPTIONS: Record<string, { content: string; activeForm: stri
   url_fetch: { content: 'Fetch URL', activeForm: 'Fetching URL' },
 };
 
-function describeToolName(name: string): { content: string; activeForm: string } {
+function describeToolUse(
+  name: string,
+  input: Record<string, unknown>,
+): { content: string; activeForm: string } {
   const normalized = name.toLowerCase().trim();
-  return TOOL_NAME_DESCRIPTIONS[normalized] ?? {
+  const base = TOOL_NAME_DESCRIPTIONS[normalized] ?? {
     content: humanizeToolName(normalized),
     activeForm: humanizeToolName(normalized),
   };
+
+  const target = extractToolTarget(input);
+  if (!target) {
+    return base;
+  }
+
+  const shortTarget = target.split('/').pop() ?? target;
+  return {
+    content: `${base.content}: ${shortTarget}`,
+    activeForm: `${base.activeForm}: ${shortTarget}`,
+  };
 }
 
-function describeToolNameForResult(content: string): { content: string; activeForm: string } {
-  // Some kimi tools report their name in the result content (e.g. the first
-  // line of a bash output block). Best-effort match against known tools.
-  const firstLine = content.split('\n')[0]?.toLowerCase() ?? '';
-  for (const [name, description] of Object.entries(TOOL_NAME_DESCRIPTIONS)) {
-    if (firstLine.includes(name.replace(/_/g, ' ')) || firstLine.includes(name)) {
-      return description;
-    }
+function describeToolResult(
+  toolId: string,
+  _content: string,
+  currentTodos: TodoItem[],
+): { content: string; activeForm: string } {
+  // Prefer matching the exact in-progress task by its synthetic tool id if we
+  // stored it; otherwise fall back to a generic label.
+  const matching = currentTodos.find((todo) => todo.status === 'in_progress');
+  if (matching) {
+    return { content: matching.content, activeForm: matching.activeForm };
   }
   return { content: 'Run tool', activeForm: 'Running tool' };
+}
+
+function extractToolTarget(input: Record<string, unknown>): string | null {
+  const candidates = [
+    input.file_path,
+    input.path,
+    input.file,
+    input.directory,
+    input.dir,
+    input.command,
+    input.query,
+    input.url,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
 }
 
 function humanizeToolName(name: string): string {
