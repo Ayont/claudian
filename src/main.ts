@@ -25,6 +25,8 @@ import {
   rankSmartContextCandidates,
   type SmartContextFile,
 } from './core/context/smartContext';
+import { AuditLogService } from './core/control/audit/AuditLogService';
+import { WorkflowEngine } from './core/control/workflows/WorkflowEngine';
 import { buildDiagnosticsMarkdown } from './core/diagnostics/buildDiagnostics';
 import { getErrorHistory } from './core/diagnostics/errorHistory';
 import {
@@ -33,6 +35,16 @@ import {
   type HealthCheckResult,
   probeCli,
 } from './core/diagnostics/providerHealthCheck';
+import { globalEventBus } from './core/events/EventBus';
+import type { EmbeddingService } from './core/intelligence/embeddings/EmbeddingService';
+import { KeywordEmbeddingProvider } from './core/intelligence/embeddings/KeywordEmbeddingProvider';
+import { OllamaEmbeddingProvider } from './core/intelligence/embeddings/OllamaEmbeddingProvider';
+import { AgenticMemoryService } from './core/intelligence/memory/AgenticMemoryService';
+import { MultiAgentService } from './core/intelligence/multiAgent/MultiAgentService';
+import { ProjectService } from './core/intelligence/projects/ProjectService';
+import { VaultRAGService } from './core/intelligence/rag/VaultRAGService';
+import { VectorStore } from './core/intelligence/vectorStore/VectorStore';
+import { VisionService } from './core/intelligence/vision/VisionService';
 import {
   deleteMemory,
   ensureMemoryFolder,
@@ -59,6 +71,7 @@ import {
   type ModelRouterTask,
   normalizeRouterRules,
 } from './core/routing/modelRouterRules';
+import { MetadataStore } from './core/storage/metadata/MetadataStore';
 import { formatRunTimelineMarkdown, getLastRunTimeline } from './core/timeline/runTimeline';
 import type {
   ClaudianSettings,
@@ -80,6 +93,7 @@ import {
 import { ClaudianView } from './features/chat/ClaudianView';
 import { ModelSelectModal } from './features/chat/ui/ModelSelectModal';
 import { ProviderStatusBar } from './features/chat/ui/ProviderStatusBar';
+import { ClaudianDashboardView, VIEW_TYPE_CLAUDIAN_DASHBOARD } from './features/dashboard/ClaudianDashboardView';
 import { type InlineEditContext, InlineEditModal } from './features/inline-edit/ui/InlineEditModal';
 import { ClaudianSettingTab } from './features/settings/ClaudianSettings';
 import { setLocale } from './i18n/i18n';
@@ -105,14 +119,30 @@ export default class ClaudianPlugin extends Plugin {
   private conversations: Conversation[] = [];
   private lastKnownTabManagerState: AppTabManagerState | null = null;
   tokenBudgetTracker = new TokenBudgetTracker();
+  metadataStore!: MetadataStore;
+  auditLogService!: AuditLogService;
+  workflowEngine!: WorkflowEngine;
+  projectService!: ProjectService;
+  agenticMemoryService!: AgenticMemoryService;
+  vectorStore!: VectorStore;
+  embeddingService!: EmbeddingService;
+  vaultRAGService!: VaultRAGService;
+  multiAgentService!: MultiAgentService;
+  visionService!: VisionService;
 
   async onload() {
     await this.loadSettings();
+    await this.initializeClaudianOSServices();
     await ProviderWorkspaceRegistry.initializeAll(this);
 
     this.registerView(
       VIEW_TYPE_CLAUDIAN,
       (leaf) => new ClaudianView(leaf, this)
+    );
+
+    this.registerView(
+      VIEW_TYPE_CLAUDIAN_DASHBOARD,
+      (leaf) => new ClaudianDashboardView(leaf)
     );
 
     this.addRibbonIcon('bot', 'Open Claudian', () => {
@@ -361,6 +391,80 @@ export default class ClaudianPlugin extends Plugin {
         const dailyText = daily > 0 ? `${state.dailyTotal.toLocaleString()} / ${daily.toLocaleString()}` : `${state.dailyTotal.toLocaleString()} (no limit)`;
         const sessionText = session > 0 ? `${state.sessionTotal.toLocaleString()} / ${session.toLocaleString()}` : `${state.sessionTotal.toLocaleString()} (no limit)`;
         new Notice(`Tokens today: ${dailyText}\nTokens this session: ${sessionText}`);
+      },
+    });
+
+    this.addCommand({
+      id: 'open-dashboard',
+      name: 'Open Claudian OS dashboard',
+      callback: () => {
+        void this.openDashboard();
+      },
+    });
+
+    this.addCommand({
+      id: 'index-vault-rag',
+      name: 'Index vault for RAG',
+      callback: () => {
+        void this.indexVaultRAG();
+      },
+    });
+
+    this.addCommand({
+      id: 'remember-fact',
+      name: 'Remember fact',
+      editorCallback: async (editor) => {
+        const selectedText = editor.getSelection().trim();
+        if (!selectedText) {
+          new Notice('Select text to remember.');
+          return;
+        }
+        const topic = selectedText.split('\n')[0].slice(0, 60);
+        await this.agenticMemoryService.remember({
+          topic,
+          content: selectedText,
+          tags: ['manual'],
+          confidence: 0.9,
+        });
+        new Notice(`Remembered: ${topic}`);
+      },
+    });
+
+    this.addCommand({
+      id: 'create-project',
+      name: 'Create Claudian project',
+      callback: () => {
+        void this.createClaudianProject();
+      },
+    });
+
+    this.addCommand({
+      id: 'show-audit-log',
+      name: 'Show audit log',
+      callback: () => {
+        void this.showAuditLog();
+      },
+    });
+
+    this.addCommand({
+      id: 'run-multi-agent',
+      name: 'Run multi-agent task',
+      callback: () => {
+        void this.runMultiAgentTask();
+      },
+    });
+
+    this.addCommand({
+      id: 'analyze-image',
+      name: 'Analyze image',
+      editorCallback: async (editor, ctx) => {
+        const file = ctx instanceof MarkdownView ? ctx.file : null;
+        if (!file) {
+          new Notice('No active image.');
+          return;
+        }
+        const result = await this.visionService.analyzeImage(file as TFile);
+        new Notice(result.description.slice(0, 200));
       },
     });
 
@@ -812,6 +916,56 @@ export default class ClaudianPlugin extends Plugin {
     new Notice(`Forgot memory: ${target.topic}`);
   }
 
+  async openDashboard(): Promise<void> {
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) {
+      new Notice('Could not open dashboard.');
+      return;
+    }
+    await leaf.setViewState({ type: VIEW_TYPE_CLAUDIAN_DASHBOARD });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  async indexVaultRAG(): Promise<void> {
+    new Notice('Indexing vault for RAG...');
+    const count = await this.vaultRAGService.indexVault({ limit: 500 });
+    new Notice(`RAG index complete: ${count} chunks indexed.`);
+  }
+
+  async createClaudianProject(): Promise<void> {
+    const name = 'New Project';
+    const id = await this.projectService.createProject({
+      name,
+      description: 'Created via command palette',
+      instructions: '',
+      memoryFolder: `.claudian/projects/${name.toLowerCase().replace(/\W+/g, '-')}`,
+      skills: [],
+      mcpServers: [],
+    });
+    new Notice(`Created project: ${id}`);
+  }
+
+  async showAuditLog(): Promise<void> {
+    const entries = this.auditLogService.query({ limit: 20 });
+    const lines = entries.map(e => `- ${new Date(e.timestamp).toLocaleString()}: ${e.action} (${e.actor})`);
+    const content = `# Audit Log\n\n${lines.join('\n') || '_No entries yet._'}`;
+    const filePath = `.claudian/audit-log-${Date.now()}.md`;
+    await this.app.vault.create(filePath, content);
+    new Notice(`Audit log written to ${filePath}`);
+  }
+
+  async runMultiAgentTask(): Promise<void> {
+    const prompt = 'Analyze the current vault structure and suggest improvements.';
+    const results = await this.multiAgentService.runTask(
+      { id: 'ma-1', prompt, agents: ['coder', 'writer', 'researcher'] },
+      async (agent) => `${agent.name} processed the task.`,
+    );
+    const content = `# Multi-Agent Results\n\n${results.map(r => `## ${r.agentId}\n\n${r.output}`).join('\n\n')}`;
+    const filePath = `.claudian/multi-agent-${Date.now()}.md`;
+    await this.app.vault.create(filePath, content);
+    new Notice(`Multi-agent results written to ${filePath}`);
+  }
+
   updateProviderStatusBar(): void {
     if (!this.providerStatusBar) {
       return;
@@ -946,6 +1100,42 @@ export default class ClaudianPlugin extends Plugin {
     }
 
     await view.createNewTab();
+  }
+
+  private async initializeClaudianOSServices(): Promise<void> {
+    const metadataPath = '.claudian/metadata/db.json';
+    this.metadataStore = new MetadataStore(
+      async () => this.app.vault.adapter.read(metadataPath).catch(() => '{}'),
+      async (content) => this.app.vault.adapter.write(metadataPath, content),
+    );
+    await this.metadataStore.initialize();
+
+    this.auditLogService = new AuditLogService(this.metadataStore);
+    this.workflowEngine = new WorkflowEngine(async (step) => {
+      globalEventBus.emit('agent:run-started', { stepId: step.id, action: step.action });
+      // Workflow steps are currently no-ops; concrete handlers are added per step type.
+      globalEventBus.emit('agent:run-completed', { stepId: step.id });
+    });
+    this.workflowEngine.start();
+
+    this.projectService = new ProjectService(this.app.vault);
+    this.agenticMemoryService = new AgenticMemoryService(this.app.vault);
+    this.multiAgentService = new MultiAgentService();
+    this.visionService = new VisionService(this.app.vault);
+
+    this.multiAgentService.registerAgent({ id: 'coder', name: 'Coder', role: 'code', systemPrompt: 'You are an expert software engineer.' });
+    this.multiAgentService.registerAgent({ id: 'writer', name: 'Writer', role: 'writing', systemPrompt: 'You are an expert technical writer.' });
+    this.multiAgentService.registerAgent({ id: 'researcher', name: 'Researcher', role: 'research', systemPrompt: 'You are a thorough researcher.' });
+
+    this.vectorStore = new VectorStore();
+    this.embeddingService = new KeywordEmbeddingProvider();
+    // Try Ollama if available, otherwise keep keyword fallback.
+    const ollama = new OllamaEmbeddingProvider({ baseUrl: 'http://localhost:11434', model: 'nomic-embed-text' });
+    if (await ollama.isAvailable()) {
+      this.embeddingService = ollama;
+    }
+
+    this.vaultRAGService = new VaultRAGService(this.app.vault, this.embeddingService, this.vectorStore);
   }
 
   async loadSettings() {
