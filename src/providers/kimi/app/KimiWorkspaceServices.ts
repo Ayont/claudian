@@ -7,6 +7,7 @@ import type {
 import type { VaultFileAdapter } from '../../../core/storage/VaultFileAdapter';
 import { SkillStorage } from '../../claude/storage/SkillStorage';
 import { SlashCommandStorage } from '../../claude/storage/SlashCommandStorage';
+import { KIMI_STATIC_COMMANDS } from '../commands/kimiStaticCommands';
 import { KimiCliResolver } from '../runtime/KimiCliResolver';
 import { kimiSettingsTabRenderer } from '../ui/KimiSettingsTab';
 
@@ -19,11 +20,14 @@ export async function createKimiWorkspaceServices(
     cliResolver: new KimiCliResolver(),
     settingsTabRenderer: kimiSettingsTabRenderer,
     // Surfaces the shared vault commands/skills (.claude/commands, .claude/skills)
-    // in the dropdown; KimiChatRuntime expands a chosen entry client-side.
+    // in the dropdown. Kimi users expect to trigger skills with "/" (matching
+    // Kimi CLI's "/skill:<name>" convention), so skills use "/" here; the runtime
+    // still expands a chosen entry client-side.
     commandCatalog: new SharedVaultCommandCatalog(
       'kimi',
       new SlashCommandStorage(adapter),
       new SkillStorage(adapter),
+      { skillInsertPrefix: '/', staticEntries: KIMI_STATIC_COMMANDS },
     ),
   };
 }

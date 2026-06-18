@@ -1,4 +1,4 @@
-import { Notice, setIcon } from 'obsidian';
+import { type App,Notice, setIcon } from 'obsidian';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -16,9 +16,10 @@ import type {
   ManagedMcpServer,
   UsageInfo,
 } from '../../../core/types';
-import { appendCheckIcon, appendMcpIcon, createProviderIconSvg } from '../../../shared/icons';
+import { appendCheckIcon, appendMcpIcon } from '../../../shared/icons';
 import { filterValidPaths, findConflictingPath, isDuplicatePath, isValidDirectoryPath, validateDirectoryPath } from '../../../utils/externalContext';
 import { expandHomePath, normalizePathForFilesystem } from '../../../utils/path';
+import { ModelSelectModal } from './ModelSelectModal';
 
 interface ElectronOpenDialogResult {
   canceled: boolean;
@@ -47,12 +48,17 @@ export interface ToolbarSettings {
 }
 
 export interface ToolbarCallbacks {
+  app: App;
   onModelChange: (model: string) => Promise<void>;
   onModeChange: (mode: string) => Promise<void>;
   onThinkingBudgetChange: (budget: string) => Promise<void>;
   onEffortLevelChange: (effort: string) => Promise<void>;
   onServiceTierChange: (serviceTier: string) => Promise<void>;
   onPermissionModeChange: (mode: string) => Promise<void>;
+  /** Reads the global auto mode ("double YOLO") flag, if wired. */
+  getAutoMode?: () => boolean;
+  /** Persists the global auto mode flag, if wired. */
+  onAutoModeChange?: (value: boolean) => Promise<void>;
   getSettings: () => ToolbarSettings;
   getEnvironmentVariables?: () => string;
   getUIConfig: () => ProviderChatUIConfig;
@@ -62,15 +68,17 @@ export interface ToolbarCallbacks {
 export class ModelSelector {
   private container: HTMLElement;
   private buttonEl: HTMLElement | null = null;
-  private dropdownEl: HTMLElement | null = null;
-  private isOpen = false;
   private callbacks: ToolbarCallbacks;
-  private readonly boundOutsidePointer = (event: Event) => this.handleOutsidePointer(event);
-  private readonly boundKeydown = (event: Event) => this.handleKeydown(event);
+
   constructor(parentEl: HTMLElement, callbacks: ToolbarCallbacks) {
     this.callbacks = callbacks;
     this.container = parentEl.createDiv({ cls: 'claudian-model-selector' });
     this.render();
+  }
+
+  /** @deprecated The model picker is now a centered Obsidian modal. */
+  getDropdownEl(): HTMLElement | null {
+    return null;
   }
 
   private getAvailableModels() {
@@ -90,18 +98,42 @@ export class ModelSelector {
     this.buttonEl.setAttribute('tabindex', '0');
     this.buttonEl.addEventListener('click', (event) => {
       event.stopPropagation();
-      this.toggle();
+      this.openModal();
     });
     this.buttonEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        this.toggle();
+        this.openModal();
       }
     });
     this.updateDisplay();
+  }
 
-    this.dropdownEl = this.container.createDiv({ cls: 'claudian-model-dropdown' });
-    this.renderOptions();
+  /** Opens the model picker programmatically (e.g. from a per-message "switch model" action). */
+  openPicker(): void {
+    this.openModal();
+  }
+
+  /** Programmatically selects a model via the same path as the modal. */
+  async selectModel(modelValue: string): Promise<void> {
+    await this.callbacks.onModelChange(modelValue);
+    this.updateDisplay();
+  }
+
+  private openModal(): void {
+    const currentModel = this.callbacks.getSettings().model;
+    const models = sortModelOptions(this.getAvailableModels(), currentModel);
+    new ModelSelectModal(
+      this.callbacks.app,
+      models,
+      currentModel,
+      (modelValue) => {
+        runToolbarAction(async () => {
+          await this.callbacks.onModelChange(modelValue);
+          this.updateDisplay();
+        }, 'Failed to change model');
+      },
+    ).open();
   }
 
   updateDisplay() {
@@ -126,110 +158,38 @@ export class ModelSelector {
     return displayModel?.label ?? null;
   }
 
-  renderOptions() {
-    if (!this.dropdownEl) return;
-    this.dropdownEl.empty();
-
-    const currentModel = this.callbacks.getSettings().model;
-    const models = this.getAvailableModels();
-    const reversed = [...models].reverse();
-
-    let lastGroup: string | undefined;
-    for (const model of reversed) {
-      if (model.group && model.group !== lastGroup) {
-        const separator = this.dropdownEl.createDiv({ cls: 'claudian-model-group' });
-        separator.setText(model.group);
-        lastGroup = model.group;
-      }
-
-      const option = this.dropdownEl.createDiv({ cls: 'claudian-model-option' });
-      if (model.value === currentModel) {
-        option.addClass('selected');
-      }
-
-      const icon = model.providerIcon ?? this.callbacks.getUIConfig().getProviderIcon?.();
-      if (icon) {
-        option.appendChild(createProviderIconSvg(icon, {
-          className: 'claudian-model-provider-icon',
-          height: 12,
-          ownerDocument: option.ownerDocument,
-          width: 12,
-        }));
-      }
-      option.createSpan({ text: model.label });
-      if (model.description) {
-        option.setAttribute('title', model.description);
-      }
-
-      option.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.close();
-        runToolbarAction(async () => {
-          await this.callbacks.onModelChange(model.value);
-          this.updateDisplay();
-          this.renderOptions();
-        }, 'Failed to change model');
-      });
-    }
-  }
-
-  private toggle(): void {
-    if (this.isOpen) {
-      this.close();
-    } else {
-      this.open();
-    }
-  }
-
-  private open(): void {
-    if (this.isOpen || !this.dropdownEl) {
-      return;
-    }
-    this.isOpen = true;
-    // Re-render so the option list and the current selection are fresh on open.
-    this.renderOptions();
-    this.dropdownEl.addClass('claudian-open');
-    const doc = this.container.ownerDocument;
-    if (!doc) {
-      return;
-    }
-    // Defer attaching the dismiss listeners so the click that opened the menu
-    // does not immediately close it.
-    window.setTimeout(() => {
-      doc.addEventListener('pointerdown', this.boundOutsidePointer, true);
-      doc.addEventListener('keydown', this.boundKeydown, true);
-    }, 0);
+  /** Kept for API compatibility; the modal rebuilds its options on every open. */
+  renderOptions(): void {
+    // no-op
   }
 
   close(): void {
-    if (!this.isOpen) {
-      return;
-    }
-    this.isOpen = false;
-    this.dropdownEl?.removeClass('claudian-open');
-    const doc = this.container.ownerDocument;
-    doc?.removeEventListener('pointerdown', this.boundOutsidePointer, true);
-    doc?.removeEventListener('keydown', this.boundKeydown, true);
+    // no-op: the modal manages its own lifecycle.
   }
 
   destroy(): void {
     this.close();
   }
+}
 
-  private handleOutsidePointer(event: Event): void {
-    const target = event.target;
-    if (target instanceof Node && this.container.contains(target)) {
-      return;
-    }
-    this.close();
-  }
-
-  private handleKeydown(event: Event): void {
-    if ((event as KeyboardEvent).key === 'Escape') {
-      event.stopPropagation();
-      this.close();
-    }
-  }
+/**
+ * Sort model options deterministically for the modal:
+ * 1. Current provider's models first.
+ * 2. Remaining providers in their registered priority order (blankTabOrder).
+ * 3. Within a provider: default models first, then alphabetically by label.
+ *
+ * The aggregated model list is already grouped/sorted by provider, so this
+ * keeps that order stable and only hoists the active provider to the top.
+ */
+function sortModelOptions(models: ProviderUIOption[], currentModelValue: string): ProviderUIOption[] {
+  const currentProviderId = models.find((model) => model.value === currentModelValue)?.providerId;
+  return [...models].sort((a, b) => {
+    const aIsCurrent = a.providerId === currentProviderId;
+    const bIsCurrent = b.providerId === currentProviderId;
+    if (aIsCurrent && !bIsCurrent) return -1;
+    if (!aIsCurrent && bIsCurrent) return 1;
+    return 0;
+  });
 }
 
 export class ModeSelector {
@@ -541,18 +501,34 @@ export class PermissionToggle {
     const planLabel = toggleConfig.planLabel ?? 'PLAN';
     const canShowPlan = Boolean(planValue) && capabilities.supportsPlanMode;
 
+    const autoSupported = Boolean(this.callbacks.onAutoModeChange);
+    const autoActive = autoSupported
+      && this.callbacks.getAutoMode?.() === true
+      && mode === toggleConfig.activeValue;
+
     if (canShowPlan && planValue && mode === planValue) {
       this.toggleEl.addClass('claudian-hidden');
       this.labelEl.setText(planLabel);
       this.labelEl.addClass('plan-active');
+      this.labelEl.removeClass('auto-active');
     } else {
       this.toggleEl.removeClass('claudian-hidden');
       this.labelEl.removeClass('plan-active');
-      if (mode === toggleConfig.activeValue) {
+      if (autoActive) {
+        // Third state: "double YOLO" — YOLO permissions + auto-answered prompts.
         this.toggleEl.addClass('active');
+        this.toggleEl.addClass('auto');
+        this.labelEl.addClass('auto-active');
+        this.labelEl.setText('AUTO');
+      } else if (mode === toggleConfig.activeValue) {
+        this.toggleEl.addClass('active');
+        this.toggleEl.removeClass('auto');
+        this.labelEl.removeClass('auto-active');
         this.labelEl.setText(toggleConfig.activeLabel);
       } else {
         this.toggleEl.removeClass('active');
+        this.toggleEl.removeClass('auto');
+        this.labelEl.removeClass('auto-active');
         this.labelEl.setText(toggleConfig.inactiveLabel);
       }
     }
@@ -563,10 +539,32 @@ export class PermissionToggle {
     if (!toggleConfig) return;
 
     const current = this.callbacks.getSettings().permissionMode;
-    const newMode = current === toggleConfig.activeValue
-      ? toggleConfig.inactiveValue
-      : toggleConfig.activeValue;
-    await this.callbacks.onPermissionModeChange(newMode);
+    const autoSupported = Boolean(this.callbacks.onAutoModeChange);
+    const autoOn = autoSupported && this.callbacks.getAutoMode?.() === true;
+    const isActive = current === toggleConfig.activeValue;
+
+    // Without auto support, keep the classic 2-state Safe ⇄ YOLO toggle.
+    if (!autoSupported) {
+      await this.callbacks.onPermissionModeChange(
+        isActive ? toggleConfig.inactiveValue : toggleConfig.activeValue,
+      );
+      this.updateDisplay();
+      return;
+    }
+
+    // 3-state cycle: Safe → YOLO → AUTO → Safe.
+    if (!isActive) {
+      // Safe → YOLO
+      if (autoOn) await this.callbacks.onAutoModeChange?.(false);
+      await this.callbacks.onPermissionModeChange(toggleConfig.activeValue);
+    } else if (!autoOn) {
+      // YOLO → AUTO
+      await this.callbacks.onAutoModeChange?.(true);
+    } else {
+      // AUTO → Safe
+      await this.callbacks.onAutoModeChange?.(false);
+      await this.callbacks.onPermissionModeChange(toggleConfig.inactiveValue);
+    }
     this.updateDisplay();
   }
 }
@@ -1291,13 +1289,13 @@ export class ContextUsageMeter {
     }
 
     // Providers that report no token counts (Kimi, Antigravity) send an
-    // estimated usage; signal that with a leading "~" and a tooltip note so the
+    // estimated usage; signal that with a leading "≈" and a tooltip note so the
     // meter isn't mistaken for an exact provider-reported figure.
     const approximate = usage.contextWindowIsAuthoritative === false;
     this.container.toggleClass('estimated', approximate);
 
     if (this.percentEl) {
-      this.percentEl.setText(`${approximate ? '~' : ''}${usage.percentage}%`);
+      this.percentEl.setText(`${approximate ? '≈' : ''}${usage.percentage}%`);
     }
 
     // Toggle warning class for > 80%
@@ -1316,10 +1314,19 @@ export class ContextUsageMeter {
   }
 
   private formatTokens(tokens: number): string {
-    if (tokens >= 1000) {
-      return `${Math.round(tokens / 1000)}k`;
+    if (!Number.isFinite(tokens) || tokens < 0) {
+      return '0';
     }
-    return String(tokens);
+    if (tokens >= 1_000_000_000) {
+      return `${(tokens / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+    }
+    if (tokens >= 1_000_000) {
+      return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    }
+    if (tokens >= 1_000) {
+      return `${(tokens / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+    }
+    return String(Math.round(tokens));
   }
 }
 

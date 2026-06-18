@@ -5,7 +5,13 @@ import {
   detectBuiltInCommand,
   isBuiltInCommandSupported,
 } from '../../../core/commands/builtInCommands';
-import { buildConversationContextBootstrap } from '../../../core/conversation/ConversationContextBootstrap';
+import { applyGoalPrefix, parseGoalArgs } from '../../../core/conversation/goalPrompt';
+import { buildDiffPreview } from '../../../core/diff/diffPreview';
+import {
+  formatMemoryContext,
+  loadMemoryNotes,
+  rankMemoryNotes,
+} from '../../../core/memory/memoryService';
 import { ProviderRegistry } from '../../../core/providers/ProviderRegistry';
 import {
   DEFAULT_CHAT_PROVIDER_ID,
@@ -25,6 +31,7 @@ import type {
   ApprovalDecisionOption,
   ChatTurnRequest,
 } from '../../../core/runtime/types';
+import { finishRunTimeline, recordRunTimelineChunk, startRunTimeline } from '../../../core/timeline/runTimeline';
 import { TOOL_EXIT_PLAN_MODE } from '../../../core/tools/toolNames';
 import type { ApprovalDecision, ChatMessage, ExitPlanModeDecision, StreamChunk } from '../../../core/types';
 import type ClaudianPlugin from '../../../main';
@@ -37,6 +44,8 @@ import { formatDurationMmSs } from '../../../utils/date';
 import type { EditorSelectionContext } from '../../../utils/editor';
 import { appendMarkdownSnippet } from '../../../utils/markdown';
 import { COMPLETION_FLAVOR_WORDS } from '../constants';
+import { resolveAutoQuestionAnswers, summarizeAutoAnswers } from '../rendering/autoQuestionAnswer';
+import { renderDiffContent, renderDiffStats } from '../rendering/DiffRenderer';
 import { type InlineAskQuestionConfig, InlineAskUserQuestion } from '../rendering/InlineAskUserQuestion';
 import { InlineExitPlanMode } from '../rendering/InlineExitPlanMode';
 import { InlinePlanApproval,type PlanApprovalDecision } from '../rendering/InlinePlanApproval';
@@ -100,6 +109,7 @@ export interface InputControllerDeps {
   generateId: () => string;
   resetInputHeight: () => void;
   getAuxiliaryModel?: () => string | null;
+  getActiveModel?: () => string | null;
   getAgentService?: () => ChatRuntime | null;
   getSubagentManager: () => SubagentManager;
   /** Tab-level provider fallback for blank tabs (derived from draft model). */
@@ -110,6 +120,10 @@ export interface InputControllerDeps {
    * is no pending bootstrap (the normal same-provider case).
    */
   consumePendingContextBootstrap?: () => string | null | undefined;
+  /** Reads the tab's active standing goal (provider-agnostic), if any. */
+  getActiveGoal?: () => string | null;
+  /** Sets (or clears, on null) the tab's standing goal. */
+  setActiveGoal?: (goal: string | null) => void;
   /** Returns true if ready. */
   ensureServiceInitialized?: () => Promise<boolean>;
   openConversation?: (conversationId: string) => Promise<void>;
@@ -117,8 +131,18 @@ export interface InputControllerDeps {
   restorePrePlanPermissionModeIfNeeded?: () => void;
 }
 
+/**
+ * Default auto-mode loop guard: after this many consecutive auto-resolved prompts
+ * (questions + plan approvals) without a manual user turn, pause once and surface
+ * the next prompt for a human — a safety valve against runaway loops. Overridable
+ * via `settings.autoModePauseAfter`.
+ */
+const DEFAULT_AUTO_MODE_PAUSE_AFTER = 25;
+
 export class InputController {
   private deps: InputControllerDeps;
+  /** Consecutive auto-answered questions since the last manual user send. */
+  private autoAnswerStreak = 0;
   private pendingApprovalInline: InlineAskUserQuestion | null = null;
   private pendingAskInline: InlineAskUserQuestion | null = null;
   private pendingExitPlanModeInline: InlineExitPlanMode | null = null;
@@ -144,6 +168,14 @@ export class InputController {
 
   private getAgentService(): ChatRuntime | null {
     return this.deps.getAgentService?.() ?? null;
+  }
+
+  /** Consecutive auto-resolutions allowed before auto mode pauses for a human. */
+  private autoModePauseThreshold(): number {
+    const configured = this.deps.plugin.settings.autoModePauseAfter;
+    return typeof configured === 'number' && configured >= 1
+      ? Math.floor(configured)
+      : DEFAULT_AUTO_MODE_PAUSE_AFTER;
   }
 
   private getAuxiliaryModel(): string | null {
@@ -218,6 +250,9 @@ export class InputController {
     // During conversation creation/switching, don't send - input is preserved so user can retry
     if (state.isCreatingConversation || state.isSwitchingConversation) return;
 
+    // A manual user turn restarts the auto-mode answer budget (see loop guard).
+    this.autoAnswerStreak = 0;
+
     const inputEl = this.deps.getInputEl();
     const imageContextManager = this.deps.getImageContextManager();
     const fileContextManager = this.deps.getFileContextManager();
@@ -240,6 +275,15 @@ export class InputController {
       }
       await this.executeBuiltInCommand(builtInCmd.command, builtInCmd.args);
       return;
+    }
+
+    // Token-budget guard: block new turns when the daily/session budget is spent.
+    if (plugin.settings.tokenBudgetEnabled !== false && plugin.tokenBudgetTracker) {
+      const budgetCheck = plugin.tokenBudgetTracker.checkBudget(plugin.settings);
+      if (budgetCheck?.ok === false) {
+        new Notice(budgetCheck.reason ?? 'Token budget reached.');
+        return;
+      }
     }
 
     // If agent is working, queue the message instead of dropping it
@@ -319,6 +363,20 @@ export class InputController {
     // `turnRequest` may be reassigned below to prepend a one-shot cross-provider bootstrap.
     let turnRequest = turnSubmission.turnRequest;
 
+    if (!options?.turnRequestOverride && plugin.settings.memoryEnabled !== false && plugin.app?.vault) {
+      const memoryNotes = await loadMemoryNotes(
+        plugin.app.vault,
+        plugin.settings.memoryFolder ?? '.claudian/memory',
+      );
+      const memoryCandidates = rankMemoryNotes(displayContent, memoryNotes, {
+        limit: plugin.settings.memoryMaxNotes ?? 5,
+      });
+      const memoryContext = formatMemoryContext(memoryCandidates);
+      if (memoryContext) {
+        turnRequest.text = `${memoryContext}\n\n${turnRequest.text}`;
+      }
+    }
+
     fileContextManager?.markCurrentNoteSent();
 
     const userMsg: ChatMessage = {
@@ -346,6 +404,11 @@ export class InputController {
     state.addMessage(assistantMsg);
     this.activeStreamingAssistantMessage = assistantMsg;
     this.activateStreamingAssistantMessage(assistantMsg);
+
+    // Persist the conversation immediately after the user message (and its
+    // placeholder assistant turn) so the chat survives plugin reloads, crashes,
+    // or mid-stream closures for every model and provider.
+    await this.deps.conversationController.save();
     this.pendingProviderUserMessages = [{
       displayContent,
       images: imagesForMessage,
@@ -385,6 +448,15 @@ export class InputController {
       return;
     }
 
+    const runTimeline = startRunTimeline({
+      conversationId: state.currentConversationId,
+      providerId: agentService.providerId,
+      model: this.deps.getActiveModel?.() ?? this.getAuxiliaryModel(),
+      prompt: displayContent,
+      currentNote: turnRequest.currentNotePath ?? null,
+      externalContextPaths: turnRequest.externalContextPaths,
+    });
+
     // Restore pendingResumeAt from persisted conversation state (survives plugin reload)
     const conversationIdForSend = state.currentConversationId;
     if (conversationIdForSend) {
@@ -410,18 +482,25 @@ export class InputController {
       // One-shot cross-provider context carry: when this conversation was just switched
       // to a different provider, prepend a BOUNDED, framed snapshot of prior turns to the
       // FIRST turn only so the freshly-started provider session has minimal context.
-      // Consumed exactly once; no-op on normal same-provider turns.
+      // The snapshot was already built + stashed at switch time (switchBoundTabProvider),
+      // so we reuse it verbatim instead of rebuilding. Consumed exactly once; no-op on
+      // normal same-provider turns.
       const pendingBootstrap = this.deps.consumePendingContextBootstrap?.();
       if (pendingBootstrap) {
-        const bootstrap = buildConversationContextBootstrap(previousMessages);
-        if (bootstrap) {
-          turnRequest = {
-            ...turnRequest,
-            text: turnRequest.text
-              ? `${bootstrap}\n\n${turnRequest.text}`
-              : bootstrap,
-          };
-        }
+        turnRequest = {
+          ...turnRequest,
+          text: turnRequest.text
+            ? `${pendingBootstrap}\n\n${turnRequest.text}`
+            : pendingBootstrap,
+        };
+      }
+
+      // Standing goal: re-inject the framed objective into the sent prompt for ANY
+      // provider so it stays in view each turn. Only the sent/persisted text carries
+      // it — the displayed user bubble keeps the raw `displayContent`.
+      const activeGoal = this.deps.getActiveGoal?.() ?? null;
+      if (activeGoal) {
+        turnRequest = { ...turnRequest, text: applyGoalPrefix(turnRequest.text, activeGoal) };
       }
 
       const preparedTurn = agentService.prepareTurn(turnRequest);
@@ -439,6 +518,8 @@ export class InputController {
           break;
         }
 
+        recordRunTimelineChunk(runTimeline, chunk);
+
         if (await this.handleProviderMessageBoundaryChunk(chunk)) {
           continue;
         }
@@ -450,6 +531,7 @@ export class InputController {
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      recordRunTimelineChunk(runTimeline, { type: 'error', content: errorMsg });
       await streamController.appendText(`\n\n**Error:** ${errorMsg}`);
     } finally {
       const finalAssistantMsg = this.activeStreamingAssistantMessage ?? assistantMsg;
@@ -581,6 +663,10 @@ export class InputController {
         this.updateQueueIndicator();
       }
 
+      finishRunTimeline(
+        runTimeline,
+        wasInvalidated ? 'invalidated' : wasInterrupted || state.cancelRequested ? 'interrupted' : 'success',
+      );
       this.activeStreamingAssistantMessage = null;
       this.resetProviderMessageBoundaryState();
     }
@@ -1383,6 +1469,10 @@ export class InputController {
 
     headerEl.createDiv({ text: description, cls: 'claudian-ask-approval-desc' });
 
+    if (this.deps.plugin.settings.diffPreviewBeforeWrites !== false) {
+      this.renderApprovalDiffPreview(headerEl, toolName, _input);
+    }
+
     const decisionOptions = approvalOptions?.decisionOptions ?? DEFAULT_APPROVAL_DECISION_OPTIONS;
     const optionDecisionMap = new Map<string, ApprovalDecision>();
     const questionOptions = decisionOptions.map((option, index) => {
@@ -1433,10 +1523,56 @@ export class InputController {
     };
   }
 
+
+  private renderApprovalDiffPreview(headerEl: HTMLElement, toolName: string, input: Record<string, unknown>): void {
+    const preview = buildDiffPreview(toolName, input);
+    if (!preview) return;
+
+    const wrapperEl = headerEl.createDiv({ cls: 'claudian-approval-diff-preview' });
+    const titleEl = wrapperEl.createDiv({ cls: 'claudian-approval-diff-title' });
+    titleEl.setText(preview.title);
+
+    for (const diff of preview.diffs.slice(0, 3)) {
+      const fileEl = wrapperEl.createDiv({ cls: 'claudian-approval-diff-file' });
+      fileEl.createSpan({ text: diff.filePath, cls: 'claudian-approval-diff-path' });
+      const statsEl = fileEl.createSpan({ cls: 'claudian-approval-diff-stats' });
+      renderDiffStats(statsEl, diff.stats);
+      const diffEl = wrapperEl.createDiv({ cls: 'claudian-approval-diff-content' });
+      renderDiffContent(diffEl, diff.diffLines, 2);
+    }
+
+    if (preview.diffs.length > 3) {
+      wrapperEl.createDiv({ text: `… ${preview.diffs.length - 3} more file(s)`, cls: 'claudian-approval-diff-more' });
+    }
+  }
+
   async handleAskUserQuestion(
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<Record<string, string | string[]> | null> {
+    // Auto mode ("double YOLO"): never block on a clarifying prompt — answer with
+    // the recommended (first) option for each question so goals run unattended.
+    // A loop guard pauses for a human after MAX_AUTO_ANSWERS_BEFORE_PAUSE answers.
+    if (this.deps.plugin.settings.autoMode) {
+      const auto = resolveAutoQuestionAnswers(input);
+      if (auto) {
+        const threshold = this.autoModePauseThreshold();
+        if (this.autoAnswerStreak >= threshold) {
+          // Pause once: reset the budget and fall through to the manual prompt.
+          this.autoAnswerStreak = 0;
+          await this.deps.streamController.appendText(
+            `\n\n⏸️ *Auto-Mode pausiert nach ${threshold} automatischen Antworten — bitte einmal bestätigen.*`,
+          );
+        } else {
+          this.autoAnswerStreak++;
+          await this.deps.streamController.appendText(
+            `\n\n⚡ *Auto-Mode: ${summarizeAutoAnswers(auto)}*`,
+          );
+          return auto;
+        }
+      }
+    }
+
     const inputContainerEl = this.deps.getInputContainerEl();
     const parentEl = inputContainerEl.parentElement;
     if (!parentEl) {
@@ -1490,6 +1626,20 @@ export class InputController {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<ExitPlanModeDecision | null> {
+    // Auto mode: approve the plan immediately and keep executing — no manual gate,
+    // unless the loop guard has tripped (then pause once for a human).
+    if (this.deps.plugin.settings.autoMode) {
+      if (this.autoAnswerStreak < this.autoModePauseThreshold()) {
+        this.autoAnswerStreak++;
+        await this.deps.streamController.appendText('\n\n⚡ *Auto-Mode: Plan automatisch bestätigt.*');
+        return { type: 'approve' };
+      }
+      this.autoAnswerStreak = 0;
+      await this.deps.streamController.appendText(
+        '\n\n⏸️ *Auto-Mode pausiert — bitte den Plan einmal bestätigen.*',
+      );
+    }
+
     const { state, streamController } = this.deps;
     const inputContainerEl = this.deps.getInputContainerEl();
     const parentEl = inputContainerEl.parentElement;
@@ -1663,6 +1813,30 @@ export class InputController {
           return;
         }
         await this.deps.onForkAll();
+        break;
+      }
+      case 'goal': {
+        const nextGoal = parseGoalArgs(args);
+        this.deps.setActiveGoal?.(nextGoal);
+        new Notice(nextGoal ? `Goal gesetzt: ${nextGoal}` : 'Goal gelöscht.');
+        break;
+      }
+      case 'workflow': {
+        const inputEl = this.deps.getInputEl();
+        const [name, ...rest] = args.split(/\s+/).filter(Boolean);
+        if (!name) {
+          new Notice('Usage: /workflow <name> [args]');
+          return;
+        }
+        const expanded = await this.deps.plugin.expandWorkflow(name, inputEl.value, rest.join(' '));
+        if (!expanded) {
+          new Notice(`Workflow nicht gefunden: ${name}`);
+          return;
+        }
+        inputEl.value = expanded;
+        inputEl.focus();
+        this.deps.resetInputHeight();
+        new Notice(`Workflow eingefügt: ${name}`);
         break;
       }
       default: {

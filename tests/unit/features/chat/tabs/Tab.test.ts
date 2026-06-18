@@ -3489,7 +3489,7 @@ describe('Tab - Blank Tab Model Selector', () => {
     } as any));
 
     const result = getBlankTabModelOptions({ codexEnabled: false });
-    expect(result).toEqual(claudeModels.map(m => ({ ...m, group: 'Claude' })));
+    expect(result).toEqual(claudeModels.map(m => ({ ...m, group: 'Claude', providerId: 'claude', providerIcon: undefined })));
   });
 
   it('returns Claude + Codex models when Codex is enabled', () => {
@@ -3512,8 +3512,8 @@ describe('Tab - Blank Tab Model Selector', () => {
 
     const result = getBlankTabModelOptions({ codexEnabled: true });
     expect(result).toEqual([
-      ...codexModels.map(m => ({ ...m, group: 'Codex' })),
-      ...claudeModels.map(m => ({ ...m, group: 'Claude' })),
+      ...codexModels.map(m => ({ ...m, group: 'Codex', providerId: 'codex', providerIcon: undefined })),
+      ...claudeModels.map(m => ({ ...m, group: 'Claude', providerId: 'claude', providerIcon: undefined })),
     ]);
   });
 });
@@ -3567,7 +3567,14 @@ describe('Tab - Cross-Provider Model Switch (bound tab)', () => {
     // Provider switched to codex, settings saved, conversation provider persisted.
     expect(tab.providerId).toBe('codex');
     expect(plugin.saveSettings).toHaveBeenCalled();
-    expect(updateConversation).toHaveBeenCalledWith('conv-1', { providerId: 'codex' });
+    // Provider rebinding persists alongside a per-provider session handoff: the
+    // incoming provider starts with a clean shared session (never a foreign id),
+    // and the outgoing Claude session is stashed under its own key.
+    expect(updateConversation).toHaveBeenCalledWith('conv-1', expect.objectContaining({
+      providerId: 'codex',
+      sessionId: null,
+      providerSessions: expect.objectContaining({ claude: expect.anything() }),
+    }));
     // A one-shot context bootstrap was armed for the next turn.
     expect(typeof tab.pendingContextBootstrap).toBe('string');
     expect(tab.pendingContextBootstrap).toContain('<conversation_context>');

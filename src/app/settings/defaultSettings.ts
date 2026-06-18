@@ -6,6 +6,17 @@ export const DEFAULT_CLAUDIAN_SETTINGS: ClaudianSettings = {
   userName: '',
 
   permissionMode: 'yolo',
+  autoMode: false,
+  autoModePauseAfter: 25,
+  modelRouterEnabled: false,
+  modelRouterRules: [],
+  diffPreviewBeforeWrites: true,
+  memoryEnabled: true,
+  memoryFolder: '.claudian/memory',
+  memoryMaxNotes: 5,
+  tokenBudgetEnabled: false,
+  dailyTokenBudget: 0,
+  sessionTokenBudget: 0,
 
   model: 'haiku',
   thinkingBudget: 'off',

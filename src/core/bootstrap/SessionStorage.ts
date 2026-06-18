@@ -115,6 +115,16 @@ export class SessionStorage {
       lastResponseAt: conversation.lastResponseAt,
       sessionId: conversation.sessionId,
       providerState: providerState && Object.keys(providerState).length > 0 ? providerState : undefined,
+      providerSessions: conversation.providerSessions && Object.keys(conversation.providerSessions).length > 0
+        ? conversation.providerSessions
+        : undefined,
+      goal: conversation.goal ?? undefined,
+      messages: conversation.messages.length > 0
+        ? conversation.messages.map((message) => ({
+          ...message,
+          images: message.images?.map((image) => ({ ...image, data: '' })),
+        }))
+        : undefined,
       currentNote: conversation.currentNote,
       externalContextPaths: conversation.externalContextPaths,
       enabledMcpServers: conversation.enabledMcpServers,

@@ -17,7 +17,9 @@
 @import "./components/thinking.css";
 @import "./components/toolcalls.css";
 @import "./components/status-panel.css";
+@import "./components/goal-banner.css";
 @import "./components/statusbar.css";
+@import "./components/update-notice.css";
 @import "./components/subagent.css";
 @import "./components/swarm-panel.css";
 @import "./components/input.css";
@@ -50,6 +52,8 @@
 @import "./modals/instruction.css";
 @import "./modals/mcp-modal.css";
 @import "./modals/fork-target.css";
+@import "./modals/model-select.css";
+@import "./modals/kimi-help.css";
 
 /* Settings */
 @import "./settings/base.css";
@@ -67,3 +71,5 @@
 
 /* Utilities imported last to preserve cascade priority without importance flags */
 @import "./base/visibility.css";
+
+@import "features/approval-diff-preview.css";

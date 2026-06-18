@@ -4,12 +4,44 @@ patchSetMaxListenersForElectron();
 
 import './providers';
 
+import * as path from 'node:path';
+
 import type { Editor, WorkspaceLeaf } from 'obsidian';
-import { MarkdownView, Notice, Plugin } from 'obsidian';
+import { MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 
 import { DEFAULT_CLAUDIAN_SETTINGS } from './app/settings/defaultSettings';
 import { SharedStorageService } from './app/storage/SharedStorageService';
+import { PluginUpdater } from './app/update/PluginUpdater';
 import type { SharedAppStorage } from './core/bootstrap/storage';
+import { TokenBudgetTracker } from './core/budget/tokenBudget';
+import {
+  type ComparisonEntry,
+  type ComparisonOutcome,
+  formatComparisonMarkdown,
+  runModelComparison,
+} from './core/compare/modelComparison';
+import {
+  formatSmartContextMentions,
+  rankSmartContextCandidates,
+  type SmartContextFile,
+} from './core/context/smartContext';
+import { buildDiagnosticsMarkdown } from './core/diagnostics/buildDiagnostics';
+import { getErrorHistory } from './core/diagnostics/errorHistory';
+import {
+  firstOutputLine,
+  formatHealthReportMarkdown,
+  type HealthCheckResult,
+  probeCli,
+} from './core/diagnostics/providerHealthCheck';
+import {
+  deleteMemory,
+  ensureMemoryFolder,
+  formatMemoryContext,
+  loadMemoryNotes,
+  rankMemoryNotes,
+  storeMemory,
+} from './core/memory/memoryService';
+import { getProviderForModel } from './core/providers/modelRouting';
 import {
   getEnvironmentVariablesForScope as getScopedEnvironmentVariables,
   getRuntimeEnvironmentText,
@@ -21,6 +53,13 @@ import { ProviderWorkspaceRegistry } from './core/providers/ProviderWorkspaceReg
 import type { ProviderId } from './core/providers/types';
 import type { AppTabManagerState } from './core/providers/types';
 import { DEFAULT_CHAT_PROVIDER_ID } from './core/providers/types';
+import {
+  chooseModelRoute,
+  type ModelRouterRule,
+  type ModelRouterTask,
+  normalizeRouterRules,
+} from './core/routing/modelRouterRules';
+import { formatRunTimelineMarkdown, getLastRunTimeline } from './core/timeline/runTimeline';
 import type {
   ClaudianSettings,
   Conversation,
@@ -30,7 +69,16 @@ import {
   VIEW_TYPE_CLAUDIAN,
 } from './core/types';
 import type { ChatViewPlacement, EnvironmentScope } from './core/types/settings';
+import {
+  expandWorkflow,
+  parseWorkflowFile,
+  type PromptWorkflow,
+  serializeWorkflow,
+  WORKFLOW_FOLDER,
+  workflowPathForName,
+} from './core/workflows/promptWorkflows';
 import { ClaudianView } from './features/chat/ClaudianView';
+import { ModelSelectModal } from './features/chat/ui/ModelSelectModal';
 import { ProviderStatusBar } from './features/chat/ui/ProviderStatusBar';
 import { type InlineEditContext, InlineEditModal } from './features/inline-edit/ui/InlineEditModal';
 import { ClaudianSettingTab } from './features/settings/ClaudianSettings';
@@ -39,6 +87,7 @@ import type { Locale } from './i18n/types';
 import { OPENCODE_PLAN_MODE_ID, OPENCODE_SAFE_MODE_ID } from './providers/opencode/modes';
 import { extractUserDisplayContent } from './utils/context';
 import { buildCursorContext } from './utils/editor';
+import { getEnhancedPath } from './utils/env';
 import { revealWorkspaceLeaf } from './utils/obsidianCompat';
 import { getVaultPath } from './utils/path';
 
@@ -51,9 +100,11 @@ function isClaudianView(value: unknown): value is ClaudianView {
 export default class ClaudianPlugin extends Plugin {
   settings!: ClaudianSettings;
   private providerStatusBar: ProviderStatusBar | null = null;
+  private pluginUpdater: PluginUpdater | null = null;
   storage!: SharedAppStorage;
   private conversations: Conversation[] = [];
   private lastKnownTabManagerState: AppTabManagerState | null = null;
+  tokenBudgetTracker = new TokenBudgetTracker();
 
   async onload() {
     await this.loadSettings();
@@ -177,17 +228,161 @@ export default class ClaudianPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: 'check-for-update',
+      name: 'Check for update',
+      callback: () => {
+        void this.pluginUpdater?.notifyIfUpdateAvailable().then(() => {
+          if (!this.pluginUpdater) return;
+          void this.pluginUpdater.checkForUpdate().then((update) => {
+            if (!update) {
+              new Notice('Ayontclaudian ist auf dem neuesten stand.');
+            }
+          });
+        });
+      },
+    });
+
+    this.addCommand({
+      id: 'toggle-auto-mode',
+      name: 'Toggle auto mode (double YOLO)',
+      callback: () => {
+        void this.toggleAutoMode();
+      },
+    });
+
+    this.addCommand({
+      id: 'check-provider-health',
+      name: 'Check provider health',
+      callback: () => {
+        void this.checkProvidersHealth();
+      },
+    });
+
+    this.addCommand({
+      id: 'compare-models',
+      name: 'Compare models (current input)',
+      callback: () => {
+        void this.compareModels();
+      },
+    });
+
+    this.addCommand({
+      id: 'copy-diagnostics',
+      name: 'Copy diagnostics',
+      callback: () => {
+        void this.copyDiagnostics();
+      },
+    });
+
+    this.addCommand({
+      id: 'show-run-timeline',
+      name: 'Show last run timeline',
+      callback: () => {
+        void this.showLastRunTimeline();
+      },
+    });
+
+    this.addCommand({
+      id: 'apply-model-router',
+      name: 'Apply model router to current input',
+      callback: () => {
+        void this.applyModelRouterToCurrentInput();
+      },
+    });
+
+    this.addCommand({
+      id: 'create-workflow-from-input',
+      name: 'Create workflow from current input',
+      callback: () => {
+        void this.createWorkflowFromCurrentInput();
+      },
+    });
+
+    this.addCommand({
+      id: 'suggest-smart-context',
+      name: 'Suggest context for current input',
+      callback: () => {
+        void this.suggestSmartContextForCurrentInput();
+      },
+    });
+
+    this.addCommand({
+      id: 'store-memory',
+      name: 'Store memory',
+      editorCallback: async (editor: Editor) => {
+        const selectedText = editor.getSelection().trim();
+        const topic = selectedText ? selectedText.split('\n')[0].slice(0, 60) : 'Untitled memory';
+        const content = selectedText || '';
+        try {
+          const folder = this.settings.memoryFolder ?? '.claudian/memory';
+          await ensureMemoryFolder(this.app.vault, folder);
+          const filePath = await storeMemory(this.app.vault, folder, topic, content);
+          new Notice(`Memory stored: ${filePath}`);
+        } catch (error) {
+          new Notice(`Failed to store memory: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    });
+
+    this.addCommand({
+      id: 'recall-memories',
+      name: 'Recall memories for current input',
+      callback: () => {
+        void this.recallMemoriesForCurrentInput();
+      },
+    });
+
+    this.addCommand({
+      id: 'forget-memory',
+      name: 'Forget memory',
+      callback: () => {
+        void this.forgetMemory();
+      },
+    });
+
+    this.addCommand({
+      id: 'reset-token-budget',
+      name: 'Reset token budget',
+      callback: () => {
+        this.tokenBudgetTracker.resetSession();
+        this.tokenBudgetTracker.resetDaily();
+        new Notice('Token budget reset.');
+      },
+    });
+
+    this.addCommand({
+      id: 'show-token-budget',
+      name: 'Show token budget status',
+      callback: () => {
+        const state = this.tokenBudgetTracker.getState();
+        const daily = this.settings.dailyTokenBudget ?? 0;
+        const session = this.settings.sessionTokenBudget ?? 0;
+        const dailyText = daily > 0 ? `${state.dailyTotal.toLocaleString()} / ${daily.toLocaleString()}` : `${state.dailyTotal.toLocaleString()} (no limit)`;
+        const sessionText = session > 0 ? `${state.sessionTotal.toLocaleString()} / ${session.toLocaleString()}` : `${state.sessionTotal.toLocaleString()} (no limit)`;
+        new Notice(`Tokens today: ${dailyText}\nTokens this session: ${sessionText}`);
+      },
+    });
+
     this.addSettingTab(new ClaudianSettingTab(this.app, this));
 
     // Status-bar item: active provider, set-up/auth state, and context usage %.
     this.providerStatusBar = new ProviderStatusBar(this.addStatusBarItem());
     this.updateProviderStatusBar();
+
+    // In-app updater: notify once shortly after load if a GitHub release is newer.
+    this.pluginUpdater = new PluginUpdater(this);
+    window.setTimeout(() => {
+      void this.pluginUpdater?.notifyIfUpdateAvailable();
+    }, 30_000);
   }
 
   onunload(): void {
     this.providerStatusBar?.destroy();
     this.providerStatusBar = null;
+    this.pluginUpdater = null;
     void this.persistOpenTabStates();
+    void this.persistOpenConversations();
   }
 
   /**
@@ -195,6 +390,428 @@ export default class ClaudianPlugin extends Plugin {
    * active, whether it is set up/ready (enabled + CLI resolves), and the current
    * context-window usage percent. No-op until the status bar exists.
    */
+  /**
+   * Probes each configured provider's CLI with `--version` in parallel, copies a
+   * Markdown health report to the clipboard, and shows a reachable/total summary.
+   */
+  async checkProvidersHealth(): Promise<void> {
+    const settingsBag = this.settings as unknown as Record<string, unknown>;
+    const cwd = getVaultPath(this.app) ?? process.cwd();
+    new Notice('Prüfe Provider-Erreichbarkeit …');
+
+    const results: HealthCheckResult[] = await Promise.all(
+      ProviderRegistry.getRegisteredProviderIds().map(async (providerId): Promise<HealthCheckResult> => {
+        const name = ProviderRegistry.getProviderDisplayName(providerId);
+        const enabled = ProviderRegistry.isEnabled(providerId, settingsBag);
+        const command = this.getResolvedProviderCliPath(providerId);
+        if (!enabled || !command) {
+          return {
+            providerId,
+            name,
+            configured: false,
+            reachable: false,
+            detail: enabled ? 'CLI not found' : 'disabled',
+          };
+        }
+        const env = {
+          ...process.env,
+          PATH: getEnhancedPath(process.env.PATH, path.isAbsolute(command) ? command : undefined),
+        };
+        const probe = await probeCli({ command, env, cwd });
+        return {
+          providerId,
+          name,
+          configured: true,
+          reachable: probe.ok,
+          version: probe.ok ? firstOutputLine(probe.output) : undefined,
+          detail: probe.ok ? undefined : probe.detail,
+        };
+      }),
+    );
+
+    const markdown = formatHealthReportMarkdown(results);
+    const reachable = results.filter((r) => r.reachable).length;
+    const configured = results.filter((r) => r.configured).length;
+    try {
+      await navigator.clipboard.writeText(markdown);
+      new Notice(`Provider-Health: ${reachable}/${configured} erreichbar (Report kopiert).`);
+    } catch {
+      new Notice(`Provider-Health: ${reachable}/${configured} erreichbar.`);
+    }
+  }
+
+  /**
+   * Runs the active tab's input prompt across the active model and a second model
+   * the user picks, then writes the side-by-side answers to a new note.
+   */
+  async compareModels(): Promise<void> {
+    const tab = this.getView()?.getActiveTab();
+    if (!tab) {
+      new Notice('Kein aktiver Chat-Tab.');
+      return;
+    }
+    const prompt = tab.dom.inputEl.value.trim();
+    if (!prompt) {
+      new Notice('Gib zuerst einen Prompt ins Eingabefeld ein.');
+      return;
+    }
+
+    const activeProviderId = tab.providerId;
+    const snapshot = ProviderSettingsCoordinator.getProviderSettingsSnapshot(this.settings, activeProviderId);
+    const activeModel = String(snapshot.model ?? this.settings.model);
+
+    const models = ProviderRegistry.getAggregatedModelOptions(this.settings as unknown as Record<string, unknown>);
+    new ModelSelectModal(this.app, models, activeModel, (secondModel) => {
+      void this.runComparisonForModels(prompt, activeProviderId, activeModel, secondModel);
+    }).open();
+  }
+
+  private async runComparisonForModels(
+    prompt: string,
+    activeProviderId: ProviderId,
+    activeModel: string,
+    secondModel: string,
+  ): Promise<void> {
+    const settingsBag = this.settings as unknown as Record<string, unknown>;
+    const secondProviderId = getProviderForModel(secondModel, settingsBag);
+    const label = (providerId: ProviderId, model: string): string =>
+      `${ProviderRegistry.getProviderDisplayName(providerId)} · ${model}`;
+
+    const entries: ComparisonEntry[] = [
+      { providerId: activeProviderId, model: activeModel, label: label(activeProviderId, activeModel) },
+      { providerId: secondProviderId, model: secondModel, label: label(secondProviderId, secondModel) },
+    ];
+
+    new Notice('Vergleiche Modelle … (läuft im Hintergrund)');
+    const results = await runModelComparison(entries, (entry) =>
+      this.collectModelResponse(entry.providerId, entry.model, prompt),
+    );
+    const markdown = formatComparisonMarkdown(prompt, results);
+
+    const folder = 'Claudian Comparisons';
+    try {
+      if (!this.app.vault.getAbstractFileByPath(folder)) {
+        await this.app.vault.createFolder(folder).catch(() => { /* exists / race */ });
+      }
+      const filePath = `${folder}/compare-${Date.now()}.md`;
+      const file = await this.app.vault.create(filePath, markdown);
+      await this.app.workspace.getLeaf(true).openFile(file);
+      new Notice('Modell-Vergleich erstellt.');
+    } catch {
+      new Notice('Vergleich konnte nicht gespeichert werden.');
+    }
+  }
+
+  /** Runs one provider/model to completion for a prompt, collecting the response text. */
+  private async collectModelResponse(
+    providerId: ProviderId,
+    model: string,
+    prompt: string,
+  ): Promise<ComparisonOutcome> {
+    const runtime = ProviderRegistry.createChatRuntime({ plugin: this, providerId });
+    try {
+      const ready = await runtime.ensureReady();
+      if (!ready) {
+        return { text: '', error: 'Provider nicht bereit (CLI/Setup prüfen).' };
+      }
+      const prepared = runtime.prepareTurn({ text: prompt });
+      let text = '';
+      for await (const chunk of runtime.query(prepared, [], { model })) {
+        if (chunk.type === 'text') {
+          text += chunk.content;
+        } else if (chunk.type === 'error') {
+          return { text, error: chunk.content };
+        }
+      }
+      return { text };
+    } finally {
+      try {
+        runtime.cleanup();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+
+  /** Flips the global auto mode, persists it, and refreshes the toolbar + status bar. */
+  async toggleAutoMode(): Promise<void> {
+    this.settings.autoMode = !this.settings.autoMode;
+    await this.saveSettings();
+    this.getView()?.getActiveTab()?.ui.permissionToggle?.updateDisplay();
+    this.updateProviderStatusBar();
+    new Notice(this.settings.autoMode ? 'Auto-Mode aktiviert (Doppel-YOLO).' : 'Auto-Mode deaktiviert.');
+  }
+
+  /**
+   * Gathers a Markdown diagnostics snapshot (version, settings, provider
+   * availability, active conversation session map) and copies it to the clipboard.
+   */
+  async copyDiagnostics(): Promise<void> {
+    const settingsBag = this.settings as unknown as Record<string, unknown>;
+    const providers = ProviderRegistry.getRegisteredProviderIds().map((providerId) => {
+      const enabled = ProviderRegistry.isEnabled(providerId, settingsBag);
+      const cliPath = this.getResolvedProviderCliPath(providerId);
+      return {
+        id: providerId,
+        name: ProviderRegistry.getProviderDisplayName(providerId),
+        enabled,
+        cliResolved: Boolean(cliPath),
+        cliPath,
+      };
+    });
+
+    const tab = this.getView()?.getActiveTab() ?? null;
+    const conversation = tab?.conversationId ? this.getConversationSync(tab.conversationId) : null;
+    const activeConversation = conversation
+      ? {
+          id: conversation.id,
+          providerId: conversation.providerId,
+          sessionId: conversation.sessionId,
+          goal: conversation.goal,
+          providerSessionIds: Object.fromEntries(
+            Object.entries(conversation.providerSessions ?? {}).map(
+              ([providerId, snapshot]) => [providerId, snapshot?.sessionId ?? null],
+            ),
+          ),
+        }
+      : null;
+
+    const markdown = buildDiagnosticsMarkdown({
+      pluginVersion: this.manifest.version,
+      generatedAt: new Date().toISOString(),
+      permissionMode: String(this.settings.permissionMode ?? 'normal'),
+      autoMode: this.settings.autoMode === true,
+      providers,
+      activeConversation,
+      recentErrors: getErrorHistory(),
+    });
+
+    try {
+      await navigator.clipboard.writeText(markdown);
+      new Notice('Claudian-Diagnose in die Zwischenablage kopiert.');
+    } catch {
+      new Notice('Diagnose konnte nicht kopiert werden.');
+    }
+  }
+
+
+  private async ensureVaultFolder(folderPath: string): Promise<void> {
+    if (this.app.vault.getAbstractFileByPath(folderPath)) return;
+    const parts = folderPath.split('/').filter(Boolean);
+    let current = '';
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) {
+        await this.app.vault.createFolder(current).catch(() => { /* exists / race */ });
+      }
+    }
+  }
+
+  private async createMarkdownNote(folder: string, basename: string, markdown: string): Promise<void> {
+    await this.ensureVaultFolder(folder);
+    const safeBase = basename.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-|-$/g, '') || 'note';
+    const filePath = `${folder}/${safeBase}.md`;
+    const finalPath = this.app.vault.getAbstractFileByPath(filePath)
+      ? `${folder}/${safeBase}-${Date.now()}.md`
+      : filePath;
+    const file = await this.app.vault.create(finalPath, markdown);
+    await this.app.workspace.getLeaf(true).openFile(file);
+  }
+
+  async showLastRunTimeline(): Promise<void> {
+    const timeline = getLastRunTimeline();
+    if (!timeline) {
+      new Notice('Noch keine Run Timeline vorhanden.');
+      return;
+    }
+
+    await this.createMarkdownNote(
+      'Claudian Timelines',
+      `timeline-${timeline.startedAt}`,
+      formatRunTimelineMarkdown(timeline),
+    );
+    new Notice('Run Timeline geöffnet.');
+  }
+
+  private defaultRouterRulesFromModels(): ModelRouterRule[] {
+    const models = ProviderRegistry.getAggregatedModelOptions(this.settings as unknown as Record<string, unknown>);
+    const findModel = (task: ModelRouterTask, patterns: RegExp[]): ModelRouterRule | null => {
+      const found = models.find(model => patterns.some(pattern => pattern.test(`${model.value} ${model.label}`)));
+      return found ? { task, model: found.value } : null;
+    };
+    return [
+      findModel('code', [/kimi/i, /code/i, /sonnet/i]),
+      findModel('writing', [/gpt/i, /claude/i, /sonnet/i]),
+      findModel('planning', [/claude/i, /kimi/i, /reason/i]),
+      findModel('vision', [/vision/i, /gpt/i, /gemini/i, /kimi/i]),
+      findModel('cheap', [/haiku/i, /mini/i, /flash/i, /highspeed/i]),
+    ].filter((rule): rule is ModelRouterRule => rule !== null);
+  }
+
+  async applyModelRouterToCurrentInput(): Promise<void> {
+    const tab = this.getView()?.getActiveTab();
+    if (!tab) {
+      new Notice('Kein aktiver Chat-Tab.');
+      return;
+    }
+
+    const prompt = tab.dom.inputEl.value.trim();
+    if (!prompt) {
+      new Notice('Gib zuerst einen Prompt ins Eingabefeld ein.');
+      return;
+    }
+
+    const settingsBag = this.settings as unknown as Record<string, unknown>;
+    const snapshot = ProviderSettingsCoordinator.getProviderSettingsSnapshot(this.settings, tab.providerId);
+    const fallbackModel = tab.draftModel ?? String(snapshot.model ?? this.settings.model);
+    const availableModels = ProviderRegistry.getAggregatedModelOptions(settingsBag);
+    const explicitRules = normalizeRouterRules(this.settings.modelRouterRules);
+    const rules = explicitRules.length > 0 ? explicitRules : this.defaultRouterRulesFromModels();
+    const decision = chooseModelRoute({ prompt, rules, availableModels, fallbackModel });
+
+    if (decision.model === fallbackModel) {
+      new Notice(`Model Router: ${decision.reason}; bleibe bei ${fallbackModel}.`);
+      return;
+    }
+
+    await tab.ui.modelSelector?.selectModel(decision.model);
+    new Notice(`Model Router: ${decision.task} → ${decision.model} (${decision.reason}).`);
+  }
+
+  private currentInputNameFallback(input: string): string {
+    const firstWords = input
+      .trim()
+      .split(/\s+/)
+      .slice(0, 5)
+      .join(' ')
+      .replace(/[^\p{L}\p{N}_ -]+/gu, '')
+      .trim();
+    return firstWords || `workflow-${Date.now()}`;
+  }
+
+  async createWorkflowFromCurrentInput(): Promise<void> {
+    const tab = this.getView()?.getActiveTab();
+    const input = tab?.dom.inputEl.value.trim() ?? '';
+    if (!input) {
+      new Notice('Gib zuerst einen Prompt ein, aus dem ein Workflow werden soll.');
+      return;
+    }
+
+    const name = this.currentInputNameFallback(input);
+    const path = workflowPathForName(name);
+    await this.ensureVaultFolder(WORKFLOW_FOLDER);
+    const body = input.includes('{{input}}') ? input : `${input}\n\n{{input}}`;
+    await this.app.vault.create(path, serializeWorkflow({
+      name,
+      description: 'Created from Claudian current input',
+      body,
+    })).catch(async () => {
+      await this.app.vault.create(`${WORKFLOW_FOLDER}/${Date.now()}-${path.split('/').pop()}`, serializeWorkflow({ name, body }));
+    });
+    new Notice(`Workflow gespeichert: ${path}. Nutze /workflow ${path.split('/').pop()?.replace(/\.md$/, '')}`);
+  }
+
+  private async listWorkflows(): Promise<PromptWorkflow[]> {
+    const folder = this.app.vault.getAbstractFileByPath(WORKFLOW_FOLDER);
+    if (!folder) return [];
+
+    const listed = await this.app.vault.adapter.list(WORKFLOW_FOLDER).catch(() => ({ files: [], folders: [] }));
+    const workflows: PromptWorkflow[] = [];
+    for (const path of listed.files.filter(file => file.endsWith('.md'))) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      try {
+        workflows.push(parseWorkflowFile(path, await this.app.vault.cachedRead(file)));
+      } catch {
+        // Skip malformed/unreadable workflow files.
+      }
+    }
+    return workflows;
+  }
+
+  async expandWorkflow(name: string, input: string, args = ''): Promise<string | null> {
+    const wanted = name.trim().toLowerCase();
+    const workflows = await this.listWorkflows();
+    const workflow = workflows.find(candidate => (
+      candidate.id.toLowerCase() === wanted
+      || candidate.name.toLowerCase() === wanted
+      || candidate.path.toLowerCase().endsWith(`/${wanted}.md`)
+    ));
+    return workflow ? expandWorkflow(workflow, input, args) : null;
+  }
+
+  async suggestSmartContextForCurrentInput(): Promise<void> {
+    const tab = this.getView()?.getActiveTab();
+    if (!tab) {
+      new Notice('Kein aktiver Chat-Tab.');
+      return;
+    }
+    const prompt = tab.dom.inputEl.value.trim();
+    if (!prompt) {
+      new Notice('Gib zuerst einen Prompt ins Eingabefeld ein.');
+      return;
+    }
+
+    const markdownFiles = this.app.vault.getMarkdownFiles().slice(0, 500);
+    const files: SmartContextFile[] = await Promise.all(markdownFiles.map(async (file) => ({
+      path: file.path,
+      basename: file.basename,
+      content: (await this.app.vault.cachedRead(file).catch(() => '')).slice(0, 6000),
+      mtime: file.stat.mtime,
+    })));
+    const candidates = rankSmartContextCandidates(prompt, files, { limit: 5 });
+    const mentionBlock = formatSmartContextMentions(candidates);
+    if (!mentionBlock) {
+      new Notice('Keine passenden Kontext-Notizen gefunden.');
+      return;
+    }
+
+    tab.dom.inputEl.value = `${mentionBlock}\n\n${tab.dom.inputEl.value}`;
+    tab.dom.inputEl.focus();
+    tab.dom.inputEl.setSelectionRange(tab.dom.inputEl.value.length, tab.dom.inputEl.value.length);
+    new Notice(`Smart Context: ${candidates.length} Vorschläge eingefügt.`);
+  }
+
+  async recallMemoriesForCurrentInput(): Promise<void> {
+    const tab = this.getView()?.getActiveTab();
+    if (!tab) {
+      new Notice('No active chat tab.');
+      return;
+    }
+    const prompt = tab.dom.inputEl.value.trim();
+    if (!prompt) {
+      new Notice('Enter a prompt first.');
+      return;
+    }
+
+    const folder = this.settings.memoryFolder ?? '.claudian/memory';
+    const notes = await loadMemoryNotes(this.app.vault, folder);
+    const candidates = rankMemoryNotes(prompt, notes, { limit: this.settings.memoryMaxNotes ?? 5 });
+    const memoryContext = formatMemoryContext(candidates);
+    if (!memoryContext) {
+      new Notice('No relevant memories found.');
+      return;
+    }
+
+    tab.dom.inputEl.value = `${memoryContext}\n\n${tab.dom.inputEl.value}`;
+    tab.dom.inputEl.focus();
+    tab.dom.inputEl.setSelectionRange(tab.dom.inputEl.value.length, tab.dom.inputEl.value.length);
+    new Notice(`Memory: ${candidates.length} entries recalled.`);
+  }
+
+  async forgetMemory(): Promise<void> {
+    const folder = this.settings.memoryFolder ?? '.claudian/memory';
+    const notes = await loadMemoryNotes(this.app.vault, folder);
+    if (notes.length === 0) {
+      new Notice('No memories to forget.');
+      return;
+    }
+
+    const target = notes[0];
+    await deleteMemory(this.app, target.path);
+    new Notice(`Forgot memory: ${target.topic}`);
+  }
+
   updateProviderStatusBar(): void {
     if (!this.providerStatusBar) {
       return;
@@ -217,6 +834,7 @@ export default class ClaudianPlugin extends Plugin {
       streaming: tab.state.isStreaming === true,
       percentage: usage ? usage.percentage : null,
       estimated: usage ? usage.contextWindowIsAuthoritative === false : false,
+      autoMode: this.settings.autoMode === true,
     });
   }
 
@@ -227,6 +845,25 @@ export default class ClaudianPlugin extends Plugin {
       if (tabManager) {
         const state = tabManager.getPersistedState();
         await this.persistTabManagerState(state);
+      }
+    }
+  }
+
+  private async persistOpenConversations(): Promise<void> {
+    // Flush any in-flight conversation metadata so chats survive an Obsidian
+    // reload or crash for every provider/model.
+    for (const view of this.getAllViews()) {
+      const tabManager = view.getTabManager();
+      if (!tabManager) {
+        continue;
+      }
+      for (const tab of tabManager.getAllTabs()) {
+        const controller = tab.controllers.conversationController;
+        if (controller) {
+          await controller.save(false).catch(() => {
+            // Best-effort: don't let one failing conversation block the rest.
+          });
+        }
       }
     }
   }
@@ -365,7 +1002,9 @@ export default class ClaudianPlugin extends Plugin {
         lastResponseAt: meta.lastResponseAt,
         sessionId: resumeSessionId,
         providerState: meta.providerState,
-        messages: [],
+        providerSessions: meta.providerSessions,
+        goal: meta.goal,
+        messages: meta.messages ?? [],
         currentNote: meta.currentNote,
         externalContextPaths: meta.externalContextPaths,
         enabledMcpServers: meta.enabledMcpServers,

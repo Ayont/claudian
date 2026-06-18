@@ -1,7 +1,8 @@
 import type { Component } from 'obsidian';
 import { Notice, Platform } from 'obsidian';
 
-import { buildConversationContextBootstrap } from '../../../core/conversation/ConversationContextBootstrap';
+import { buildConversationContextBootstrap, computeBootstrapCharCap } from '../../../core/conversation/ConversationContextBootstrap';
+import { computeProviderSessionHandoff } from '../../../core/conversation/providerSessionHandoff';
 import { GitService } from '../../../core/git/GitService';
 import { getHiddenProviderCommandSet } from '../../../core/providers/commands/hiddenCommands';
 import type { ProviderCommandDropdownConfig } from '../../../core/providers/commands/ProviderCommandCatalog';
@@ -45,6 +46,7 @@ import { ChatState } from '../state/ChatState';
 import { BangBashModeManager as BangBashModeManagerClass } from '../ui/BangBashModeManager';
 import { CommitBar } from '../ui/CommitBar';
 import { FileContextManager } from '../ui/FileContext';
+import { GoalBanner } from '../ui/GoalBanner';
 import { ImageContextManager } from '../ui/ImageContext';
 import { createInputToolbar } from '../ui/InputToolbar';
 import { InstructionModeManager as InstructionModeManagerClass } from '../ui/InstructionModeManager';
@@ -341,6 +343,7 @@ function refreshTabProviderUI(tab: TabData, plugin: ClaudianPlugin): void {
   tab.ui.thinkingBudgetSelector?.updateDisplay();
   tab.ui.permissionToggle?.updateDisplay();
   tab.ui.serviceTierToggle?.updateDisplay();
+  syncTabGoalBanner(tab, plugin);
   tab.dom.inputWrapper.toggleClass(
     'claudian-input-plan-mode',
     permissionMode === 'plan' && capabilities.supportsPlanMode,
@@ -393,6 +396,52 @@ function ensureTitleGenerationService(tab: TabData, plugin: ClaudianPlugin): voi
   }
 }
 
+/** Display name of the tab's active provider, used as the goal banner's provider chip. */
+function goalProviderLabel(tab: TabData, plugin: ClaudianPlugin): string {
+  return ProviderRegistry.getProviderDisplayName(getTabProviderId(tab, plugin));
+}
+
+/**
+ * Sets (or clears, on empty) the tab's standing goal: updates the in-memory
+ * mirror, the banner, and persists it on the bound conversation.
+ */
+export function applyTabGoal(tab: TabData, plugin: ClaudianPlugin, goal: string | null): void {
+  const trimmed = (goal ?? '').trim() || null;
+  tab.goal = trimmed;
+
+  if (tab.ui.goalBanner) {
+    if (trimmed) {
+      tab.ui.goalBanner.setGoal(trimmed, goalProviderLabel(tab, plugin));
+    } else {
+      tab.ui.goalBanner.clear();
+    }
+  }
+
+  if (tab.conversationId) {
+    void plugin.updateConversation(tab.conversationId, { goal: trimmed }).catch(() => {
+      // Best-effort persistence — the in-memory goal still drives this session.
+    });
+  }
+}
+
+/** Refreshes the goal banner from the bound conversation (or the in-memory mirror). */
+function syncTabGoalBanner(tab: TabData, plugin: ClaudianPlugin): void {
+  const banner = tab.ui.goalBanner;
+  if (!banner) return;
+
+  const persisted = tab.conversationId
+    ? plugin.getConversationSync(tab.conversationId)?.goal ?? null
+    : null;
+  const goal = persisted ?? tab.goal ?? null;
+  tab.goal = goal;
+
+  if (goal) {
+    banner.setGoal(goal, goalProviderLabel(tab, plugin));
+  } else {
+    banner.clear();
+  }
+}
+
 function cleanupTabRuntime(tab: TabData): void {
   if (tab.service && typeof tab.service.cleanup === 'function') {
     tab.service.cleanup();
@@ -416,11 +465,31 @@ async function switchBoundTabProvider(
   getProviderCatalogConfig?: () => ProviderCatalogInfo,
   onProviderChanged?: (providerId: ProviderId) => void | Promise<void>,
 ): Promise<void> {
+  const oldProvider = tab.providerId;
   const newProvider = getEnabledProviderForModel(model, plugin.settings);
 
   // Arm the one-shot context carry from the messages present BEFORE this switch.
-  const bootstrap = buildConversationContextBootstrap(tab.state.messages);
+  // The cap scales with the TARGET model's context window, so switching to a
+  // large-window model carries proportionally more prior context (bounded).
+  const targetContextWindow = ProviderRegistry.getChatUIConfig(newProvider)
+    .getContextWindowSize(model, plugin.settings.customContextLimits, plugin.settings);
+  const bootstrap = buildConversationContextBootstrap(tab.state.messages, {
+    maxChars: computeBootstrapCharCap(targetContextWindow),
+  });
   tab.pendingContextBootstrap = bootstrap || null;
+
+  // Per-provider session isolation: stash the OUTGOING provider's native session and
+  // restore the INCOMING provider's own (or start clean). Without this the shared
+  // conversation.sessionId still holds the previous provider's id, and a provider that
+  // falls back to it (Claude/Codex/Pi) resumes a foreign session → "session not found".
+  const conversation = tab.conversationId ? plugin.getConversationSync(tab.conversationId) : null;
+  const handoff = computeProviderSessionHandoff({
+    oldProviderId: oldProvider,
+    newProviderId: newProvider,
+    currentSessionId: conversation?.sessionId ?? null,
+    currentProviderState: conversation?.providerState,
+    providerSessions: conversation?.providerSessions,
+  });
 
   // Drop the stale runtime so the next send reinitializes against the new provider.
   if (tab.service) {
@@ -437,10 +506,16 @@ async function switchBoundTabProvider(
   });
   await uiConfig.prepareModelMetadata?.(model, plugin.settings, { plugin });
 
-  // Persist the conversation's active provider so a reload before the next send keeps it.
+  // Persist the active provider + session handoff so a reload (or the next
+  // initializeTabService) reads the correct, provider-isolated session.
   if (tab.conversationId) {
     try {
-      await plugin.updateConversation(tab.conversationId, { providerId: newProvider });
+      await plugin.updateConversation(tab.conversationId, {
+        providerId: newProvider,
+        sessionId: handoff.sessionId,
+        providerState: handoff.providerState,
+        providerSessions: handoff.providerSessions,
+      });
     } catch {
       // Best-effort — the in-memory provider + next-turn save() still carry the switch.
     }
@@ -617,6 +692,7 @@ export function createTab(options: TabCreateOptions): TabData {
       mcpServerSelector: null,
       permissionToggle: null,
       serviceTierToggle: null,
+      goalBanner: null,
       slashCommandDropdown: null,
       instructionModeManager: null,
       bangBashModeManager: null,
@@ -641,6 +717,10 @@ export function createTab(options: TabCreateOptions): TabData {
  * Builds the DOM structure for a tab.
  */
 function buildTabDOM(contentEl: HTMLElement): TabDOMElements {
+  // Host for the active-goal banner — kept as the first child so the goal
+  // indicator sits above the transcript.
+  const goalBannerHostEl = contentEl.createDiv({ cls: 'claudian-goal-banner-host' });
+  goalBannerHostEl.setAttribute('data-claudian-role', 'goal-banner-host');
   const messagesWrapperEl = contentEl.createDiv({ cls: 'claudian-messages-wrapper' });
   const messagesEl = messagesWrapperEl.createDiv({ cls: 'claudian-messages' });
   const welcomeEl = messagesEl.createDiv({ cls: 'claudian-welcome' });
@@ -661,6 +741,7 @@ function buildTabDOM(contentEl: HTMLElement): TabDOMElements {
 
   return {
     contentEl,
+    goalBannerHostEl,
     messagesEl,
     welcomeEl,
     statusPanelContainerEl,
@@ -940,6 +1021,7 @@ function initializeInputToolbar(
   };
 
   const toolbarComponents = createInputToolbar(inputToolbar, {
+    app: plugin.app,
     getUIConfig: () => {
       if (tab.lifecycleState === 'blank') {
         return blankTabUIConfigProxy();
@@ -1069,6 +1151,12 @@ function initializeInputToolbar(
         mode === 'plan' && getTabCapabilities(tab, plugin).supportsPlanMode,
       );
     },
+    getAutoMode: () => plugin.settings.autoMode === true,
+    onAutoModeChange: async (value: boolean) => {
+      plugin.settings.autoMode = value;
+      await plugin.saveSettings();
+      tab.ui.permissionToggle?.updateDisplay();
+    },
   });
 
   tab.ui.modelSelector = toolbarComponents.modelSelector;
@@ -1127,6 +1215,19 @@ export function initializeTabUI(
 
   // Initialize context managers (file/image)
   initializeContextManagers(tab, plugin);
+
+  // Active-goal banner: provider-agnostic standing objective set via /goal.
+  tab.ui.goalBanner = new GoalBanner({
+    mountEl: dom.goalBannerHostEl,
+    onClear: () => applyTabGoal(tab, plugin, null),
+    onEdit: (currentGoal) => {
+      dom.inputEl.value = `/goal ${currentGoal}`;
+      autoResizeTextarea(dom.inputEl);
+      dom.inputEl.focus();
+      dom.inputEl.setSelectionRange(dom.inputEl.value.length, dom.inputEl.value.length);
+    },
+  });
+  syncTabGoalBanner(tab, plugin);
 
   // Selection indicator - add to contextRowEl
   dom.selectionIndicatorEl = dom.contextRowEl.createDiv({ cls: 'claudian-selection-indicator claudian-hidden' });
@@ -1388,6 +1489,7 @@ export function initializeTabControllers(
       ? (id) => handleForkRequest(tab, plugin, id, forkRequestCallback)
       : undefined,
     () => getTabCapabilities(tab, plugin),
+    () => tab.ui.modelSelector?.openPicker(),
   );
 
   // Selection controller
@@ -1425,6 +1527,12 @@ export function initializeTabControllers(
     getFileContextManager: () => ui.fileContextManager,
     updateQueueIndicator: () => tab.controllers.inputController?.updateQueueIndicator(),
     getAgentService: () => tab.service,
+    updateLiveActivity: ({ primary, meta, phrase }) => {
+      if (phrase) {
+        tab.ui.streamStatusBar?.setPhrase(phrase);
+      }
+      tab.ui.streamStatusBar?.setActivity(primary, meta);
+    },
   });
 
   // Wire subagent callback now that StreamController exists
@@ -1539,6 +1647,10 @@ export function initializeTabControllers(
       // Per-tab input height is managed by CSS, no dynamic adjustment needed
     },
     getAuxiliaryModel: () => tab.service?.getAuxiliaryModel?.() ?? tab.draftModel ?? null,
+    getActiveModel: () => {
+      if (tab.draftModel) return tab.draftModel;
+      return getTabSettingsSnapshot(tab, plugin).model ?? null;
+    },
     getAgentService: () => tab.service,
     getSubagentManager: () => services.subagentManager,
     getTabProviderId: () => getTabProviderId(tab, plugin),
@@ -1547,6 +1659,10 @@ export function initializeTabControllers(
       tab.pendingContextBootstrap = null;
       return pending;
     },
+    getActiveGoal: () => (tab.conversationId
+      ? plugin.getConversationSync(tab.conversationId)?.goal ?? tab.goal ?? null
+      : tab.goal ?? null),
+    setActiveGoal: (goal: string | null) => applyTabGoal(tab, plugin, goal),
     ensureServiceInitialized: async () => {
       if (tab.serviceInitialized && tab.lifecycleState === 'bound_active') {
         return true;

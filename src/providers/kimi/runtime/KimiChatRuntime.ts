@@ -1,6 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import * as path from 'node:path';
 
+import { Notice } from 'obsidian';
+
 import { expandProviderCommandInput } from '../../../core/providers/commands/expandProviderCommandInput';
 import { getRuntimeEnvironmentText } from '../../../core/providers/providerEnvironment';
 import { ProviderWorkspaceRegistry } from '../../../core/providers/ProviderWorkspaceRegistry';
@@ -23,6 +25,8 @@ import type {
   SessionUpdateResult,
   SubagentRuntimeState,
 } from '../../../core/runtime/types';
+import type { TodoItem } from '../../../core/tools/todo';
+import { TOOL_TODO_WRITE } from '../../../core/tools/toolNames';
 import type {
   ChatMessage,
   Conversation,
@@ -39,6 +43,9 @@ import {
   type WindowsCmdShimSpawnSpec,
 } from '../../../utils/windowsCmdShim';
 import { KIMI_PROVIDER_CAPABILITIES } from '../capabilities';
+import { KimiHelpModal } from '../commands/KimiHelpModal';
+import { KimiSessionListModal } from '../commands/KimiSessionListModal';
+import { KimiSlashCommandHandler } from '../commands/KimiSlashCommandHandler';
 import { getKimiModelContextWindow, resolveKimiModelSelection } from '../modelOptions';
 import { parseKimiStreamLine } from '../normalization/streamEvents';
 import {
@@ -48,7 +55,8 @@ import {
 } from '../normalization/streamMapping';
 import { getKimiProviderSettings, KIMI_PROVIDER_ID } from '../settings';
 import { buildPersistedKimiState, getKimiState, type KimiProviderState } from '../types';
-import { buildKimiLaunchSpec } from './KimiLaunchSpec';
+import { prepareKimiPromptWithGoal } from './KimiGoalPrompt';
+import { buildKimiLaunchSpec, detectKimiCliFlavor } from './KimiLaunchSpec';
 import { buildKimiRuntimeEnv } from './KimiRuntimeEnvironment';
 
 // stderr prints a resume hint after each run, e.g. `kimi -r <session-id>`.
@@ -68,14 +76,51 @@ export class KimiChatRuntime implements ChatRuntime {
   readonly providerId = KIMI_PROVIDER_ID;
 
   private sessionId: string | null = null;
+  private goal: string | null = null;
+  private forkParentId: string | null = null;
   private sessionInvalidated = false;
   private ready = false;
   private currentTurnMetadata: ChatTurnMetadata = {};
   private readonly readyListeners = new Set<(ready: boolean) => void>();
   private activeProcess: ChildProcessWithoutNullStreams | null = null;
   private cancelled = false;
+  private currentTodos: TodoItem[] = [];
+  private askUserQuestionCallback: AskUserQuestionCallback | null = null;
+  private slashHandler: KimiSlashCommandHandler;
 
-  constructor(private readonly plugin: ClaudianPlugin) {}
+  constructor(private readonly plugin: ClaudianPlugin) {
+    this.slashHandler = new KimiSlashCommandHandler(
+      () => ({ sessionId: this.sessionId ?? undefined, goal: this.goal ?? undefined }),
+      (state) => {
+        this.sessionId = state.sessionId ?? null;
+        this.goal = state.goal ?? null;
+        this.forkParentId = state.forkParentId ?? null;
+        this.sessionInvalidated = false;
+      },
+      {
+        openSessionList: () => {
+          new KimiSessionListModal(
+            this.plugin.app,
+            (id) => {
+              this.sessionId = id;
+              this.sessionInvalidated = false;
+              new Notice(`Resumed Kimi session ${id}`);
+            },
+            this.goal ?? undefined,
+          ).open();
+        },
+        openHelp: () => new KimiHelpModal(this.plugin.app, this.goal ?? undefined).open(),
+        closeTab: () => {
+          const view = this.plugin.getView();
+          const tabManager = view?.getTabManager();
+          const activeTabId = tabManager?.getActiveTabId();
+          if (tabManager && activeTabId) {
+            void tabManager.closeTab(activeTabId);
+          }
+        },
+      },
+    );
+  }
 
   getCapabilities(): Readonly<ProviderCapabilities> {
     return KIMI_PROVIDER_CAPABILITIES;
@@ -103,6 +148,7 @@ export class KimiChatRuntime implements ChatRuntime {
   syncConversationState(conversation: ChatRuntimeConversationState | null): void {
     if (!conversation) {
       this.sessionId = null;
+      this.goal = null;
       this.sessionInvalidated = false;
       return;
     }
@@ -112,6 +158,8 @@ export class KimiChatRuntime implements ChatRuntime {
     // holds another provider's id, which kimi-cli would reject. No own session
     // → start fresh.
     this.sessionId = state.sessionId ?? null;
+    this.goal = state.goal ?? null;
+    this.forkParentId = state.forkParentId ?? null;
     this.sessionInvalidated = false;
   }
 
@@ -130,6 +178,88 @@ export class KimiChatRuntime implements ChatRuntime {
     return Boolean(resolved);
   }
 
+  private async *runAuthCommand(
+    action: 'login' | 'logout',
+    command: string,
+    env: NodeJS.ProcessEnv,
+    cwd: string,
+  ): AsyncGenerator<StreamChunk> {
+    if (detectKimiCliFlavor(command) === 'legacy') {
+      yield {
+        type: 'error',
+        content: `/${action} requires the modern \`kimi\` binary. The legacy \`kimi-cli\` does not support authentication commands.`,
+      };
+      yield { type: 'done' };
+      return;
+    }
+
+    yield { type: 'user_message_start', content: `/${action}` };
+    yield { type: 'text', content: `Running \`kimi ${action}\`...` };
+
+    let proc: ChildProcessWithoutNullStreams;
+    let resolvedSpawnSpec: WindowsCmdShimSpawnSpec;
+    try {
+      resolvedSpawnSpec = resolveWindowsCmdShimSpawnSpec({
+        command,
+        args: [action],
+      });
+      proc = spawn(resolvedSpawnSpec.command, resolvedSpawnSpec.args, {
+        cwd,
+        env: {
+          ...env,
+          PATH: getEnhancedPath(env.PATH, path.isAbsolute(command) ? command : undefined),
+        },
+        stdio: 'pipe',
+        windowsHide: true,
+        ...(resolvedSpawnSpec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      });
+    } catch (error) {
+      yield {
+        type: 'error',
+        content: error instanceof Error ? error.message : `Failed to run \`kimi ${action}\`.`,
+      };
+      yield { type: 'done' };
+      return;
+    }
+
+    this.activeProcess = proc;
+    proc.stdin.end();
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf-8');
+    });
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8');
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => {
+      proc.on('error', (error) => {
+        stderr += error instanceof Error ? error.message : String(error);
+        resolve(null);
+      });
+      proc.on('close', (code) => resolve(code));
+    });
+
+    this.activeProcess = null;
+
+    const output = stdout.trim() || stderr.trim();
+    if (output) {
+      yield { type: 'text', content: output };
+    }
+
+    if (exitCode !== 0) {
+      yield {
+        type: 'error',
+        content: `\`kimi ${action}\` exited with code ${exitCode ?? 'unknown'}.${stderr ? `\n\n${stderr.trim()}` : ''}`,
+      };
+    }
+
+    yield { type: 'done' };
+  }
+
   async *query(
     turn: PreparedChatTurn,
     conversationHistory?: ChatMessage[],
@@ -137,6 +267,7 @@ export class KimiChatRuntime implements ChatRuntime {
   ): AsyncGenerator<StreamChunk> {
     this.currentTurnMetadata = {};
     this.cancelled = false;
+    this.currentTodos = [];
 
     const settingsBag = this.plugin.settings as unknown as Record<string, unknown>;
     const settings = getKimiProviderSettings(settingsBag);
@@ -176,6 +307,27 @@ export class KimiChatRuntime implements ChatRuntime {
       }
     } catch {
       promptText = turn.request.text;
+    }
+
+    // Mirror "/goal" locally so the standing objective survives across turns in
+    // print mode. The raw `/goal` command is still sent to Kimi for confirmation.
+    const goalResult = prepareKimiPromptWithGoal(promptText, this.goal);
+    this.goal = goalResult.nextGoal;
+    promptText = goalResult.promptToSend;
+
+    // Handle Kimi-native slash commands that should trigger UI actions rather
+    // than being sent to the CLI (e.g. /new, /fork, /sessions, /help, /exit).
+    const slashResult = await this.slashHandler.execute(promptText);
+    if (slashResult.consumed) {
+      if (slashResult.authAction) {
+        yield* this.runAuthCommand(slashResult.authAction, command, env, cwd);
+        return;
+      }
+      if (slashResult.followUpPrompt) {
+        yield { type: 'text', content: slashResult.followUpPrompt };
+      }
+      yield { type: 'done' };
+      return;
     }
 
     const launchSpec = buildKimiLaunchSpec({
@@ -229,6 +381,7 @@ export class KimiChatRuntime implements ChatRuntime {
     const streamState = createKimiStreamState();
     let stdoutBuffer = '';
     let stderr = '';
+    const unparsedStdoutLines: string[] = [];
     const pendingChunks: StreamChunk[] = [];
     let toolResultIndex = 0;
 
@@ -252,7 +405,12 @@ export class KimiChatRuntime implements ChatRuntime {
       while (newlineIndex !== -1) {
         const line = stdoutBuffer.slice(0, newlineIndex);
         stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        this.consumeLine(line, streamState, pendingChunks, () => toolResultIndex++);
+        if (!this.consumeLine(line, streamState, pendingChunks, () => toolResultIndex++)) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            unparsedStdoutLines.push(trimmed);
+          }
+        }
         newlineIndex = stdoutBuffer.indexOf('\n');
       }
       signal();
@@ -269,7 +427,9 @@ export class KimiChatRuntime implements ChatRuntime {
     const onExit = (info: { code: number | null; error?: Error }): void => {
       // Flush any trailing partial line that arrived without a newline.
       if (stdoutBuffer.trim()) {
-        this.consumeLine(stdoutBuffer, streamState, pendingChunks, () => toolResultIndex++);
+        if (!this.consumeLine(stdoutBuffer, streamState, pendingChunks, () => toolResultIndex++)) {
+          unparsedStdoutLines.push(stdoutBuffer.trim());
+        }
         stdoutBuffer = '';
       }
       exitInfo = info;
@@ -291,6 +451,10 @@ export class KimiChatRuntime implements ChatRuntime {
           if ((chunk.type === 'text' || chunk.type === 'thinking') && typeof chunk.content === 'string') {
             responseText += chunk.content;
           }
+          const todoChunk = this.trackToolCallAsTodo(chunk);
+          if (todoChunk) {
+            yield todoChunk;
+          }
           yield chunk;
         }
         if (finished) {
@@ -304,7 +468,10 @@ export class KimiChatRuntime implements ChatRuntime {
       this.recoverSessionId(stderr);
 
       if (exitInfo.error) {
-        yield { type: 'error', content: this.formatError(exitInfo.error.message, stderr) };
+        yield {
+          type: 'error',
+          content: this.formatError(exitInfo.error.message, stderr, unparsedStdoutLines),
+        };
         yield { type: 'done' };
         return;
       }
@@ -312,7 +479,7 @@ export class KimiChatRuntime implements ChatRuntime {
       if (exitInfo.code !== 0 && exitInfo.code !== null) {
         yield {
           type: 'error',
-          content: this.formatError(`kimi-cli exited with code ${exitInfo.code}`, stderr),
+          content: this.formatError(`Kimi CLI exited with code ${exitInfo.code}`, stderr, unparsedStdoutLines),
         };
         yield { type: 'done' };
         return;
@@ -341,6 +508,50 @@ export class KimiChatRuntime implements ChatRuntime {
         this.activeProcess = null;
       }
     }
+  }
+
+  /**
+   * Tracks live tool calls as a task list so Kimi shows a Codex-style todo
+   * panel. Each tool_use adds/updates a task; the matching tool_result marks
+   * it completed. The panel is updated via synthetic TodoWrite tool events.
+   */
+  private trackToolCallAsTodo(chunk: StreamChunk): StreamChunk | null {
+    if (chunk.type === 'tool_use' && chunk.name !== TOOL_TODO_WRITE) {
+      const description = describeToolUse(chunk.name, chunk.input);
+      const existingIndex = this.currentTodos.findIndex((todo) => todo.content === description.content);
+      if (existingIndex >= 0) {
+        this.currentTodos[existingIndex] = {
+          ...this.currentTodos[existingIndex],
+          status: 'in_progress',
+          activeForm: description.activeForm,
+        };
+      } else {
+        this.currentTodos.push({ ...description, status: 'in_progress' });
+      }
+      return this.buildTodoWriteChunk();
+    }
+
+    if (chunk.type === 'tool_result') {
+      const description = describeToolResult(chunk.id, chunk.content, this.currentTodos);
+      const matching = this.currentTodos.findIndex((todo) =>
+        todo.status === 'in_progress' && todo.content === description.content
+      );
+      if (matching >= 0) {
+        this.currentTodos[matching] = { ...this.currentTodos[matching], status: 'completed' };
+        return this.buildTodoWriteChunk();
+      }
+    }
+
+    return null;
+  }
+
+  private buildTodoWriteChunk(): StreamChunk {
+    return {
+      type: 'tool_use',
+      id: `kimi-todo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: TOOL_TODO_WRITE,
+      input: { todos: [...this.currentTodos], __panelOnly: true },
+    };
   }
 
   cancel(): void {
@@ -392,7 +603,9 @@ export class KimiChatRuntime implements ChatRuntime {
 
   setApprovalCallback(_callback: ApprovalCallback | null): void {}
   setApprovalDismisser(_dismisser: (() => void) | null): void {}
-  setAskUserQuestionCallback(_callback: AskUserQuestionCallback | null): void {}
+  setAskUserQuestionCallback(callback: AskUserQuestionCallback | null): void {
+    this.askUserQuestionCallback = callback;
+  }
   setExitPlanModeCallback(_callback: ExitPlanModeCallback | null): void {}
   setPermissionModeSyncCallback(_callback: ((sdkMode: string) => void) | null): void {}
   setSubagentHookProvider(_getState: () => SubagentRuntimeState): void {}
@@ -413,6 +626,8 @@ export class KimiChatRuntime implements ChatRuntime {
     }
     const state: KimiProviderState = {
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      ...(this.goal ? { goal: this.goal } : {}),
+      ...(this.forkParentId ? { forkParentId: this.forkParentId } : {}),
     };
     return {
       updates: {
@@ -447,10 +662,10 @@ export class KimiChatRuntime implements ChatRuntime {
     streamState: KimiStreamState,
     sink: StreamChunk[],
     nextIndex: () => number,
-  ): void {
+  ): boolean {
     const event = parseKimiStreamLine(line);
     if (!event) {
-      return;
+      return false;
     }
     const sessionFromEvent = event.raw.session_id;
     if (typeof sessionFromEvent === 'string' && sessionFromEvent.trim()) {
@@ -460,6 +675,7 @@ export class KimiChatRuntime implements ChatRuntime {
     for (const chunk of chunks) {
       sink.push(chunk);
     }
+    return true;
   }
 
   private recoverSessionId(stderr: string): void {
@@ -482,8 +698,91 @@ export class KimiChatRuntime implements ChatRuntime {
     }
   }
 
-  private formatError(message: string, stderr: string): string {
+  private formatError(message: string, stderr: string, stdoutLines: string[] = []): string {
     const trimmed = stderr.trim().slice(-2000);
-    return trimmed ? `${message}\n\n${trimmed}` : message;
+    const stdout = stdoutLines.join('\n').trim().slice(-2000);
+    const details = [stdout, trimmed].filter(Boolean).join('\n\n');
+    return details ? `${message}\n\n${details}` : message;
   }
+}
+
+const TOOL_NAME_DESCRIPTIONS: Record<string, { content: string; activeForm: string }> = {
+  bash: { content: 'Run command', activeForm: 'Running command' },
+  read_file: { content: 'Read file', activeForm: 'Reading file' },
+  write_file: { content: 'Write file', activeForm: 'Writing file' },
+  edit_file: { content: 'Edit file', activeForm: 'Editing file' },
+  search: { content: 'Search files', activeForm: 'Searching files' },
+  glob: { content: 'List files', activeForm: 'Listing files' },
+  ls: { content: 'List directory', activeForm: 'Listing directory' },
+  cat: { content: 'Show file', activeForm: 'Showing file' },
+  grep: { content: 'Search content', activeForm: 'Searching content' },
+  web_search: { content: 'Search web', activeForm: 'Searching web' },
+  url_fetch: { content: 'Fetch URL', activeForm: 'Fetching URL' },
+  // Kimi Code uses PascalCase tool names (Read, Write, Edit, Bash, …).
+  read: { content: 'Read file', activeForm: 'Reading file' },
+  view: { content: 'View file', activeForm: 'Viewing file' },
+  write: { content: 'Write file', activeForm: 'Writing file' },
+  edit: { content: 'Edit file', activeForm: 'Editing file' },
+  multiedit: { content: 'Edit files', activeForm: 'Editing files' },
+};
+
+function describeToolUse(
+  name: string,
+  input: Record<string, unknown>,
+): { content: string; activeForm: string } {
+  const normalized = name.toLowerCase().trim();
+  const base = TOOL_NAME_DESCRIPTIONS[normalized] ?? {
+    content: humanizeToolName(normalized),
+    activeForm: humanizeToolName(normalized),
+  };
+
+  const target = extractToolTarget(input);
+  if (!target) {
+    return base;
+  }
+
+  const shortTarget = target.split('/').pop() ?? target;
+  return {
+    content: `${base.content}: ${shortTarget}`,
+    activeForm: `${base.activeForm}: ${shortTarget}`,
+  };
+}
+
+function describeToolResult(
+  toolId: string,
+  _content: string,
+  currentTodos: TodoItem[],
+): { content: string; activeForm: string } {
+  // Prefer matching the exact in-progress task by its synthetic tool id if we
+  // stored it; otherwise fall back to a generic label.
+  const matching = currentTodos.find((todo) => todo.status === 'in_progress');
+  if (matching) {
+    return { content: matching.content, activeForm: matching.activeForm };
+  }
+  return { content: 'Run tool', activeForm: 'Running tool' };
+}
+
+function extractToolTarget(input: Record<string, unknown>): string | null {
+  const candidates = [
+    input.file_path,
+    input.path,
+    input.file,
+    input.directory,
+    input.dir,
+    input.command,
+    input.query,
+    input.url,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+function humanizeToolName(name: string): string {
+  return name
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }

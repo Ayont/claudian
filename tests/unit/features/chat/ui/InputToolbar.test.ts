@@ -1,4 +1,5 @@
 import { createMockEl } from '@test/helpers/mockElement';
+import { App, Modal } from 'obsidian';
 
 import type { UsageInfo } from '@/core/types';
 import {
@@ -11,15 +12,9 @@ import {
   ServiceTierToggle,
   ThinkingBudgetSelector,
 } from '@/features/chat/ui/InputToolbar';
-import {
-  DEFAULT_CODEX_PRIMARY_MODEL,
-  DEFAULT_CODEX_PRIMARY_MODEL_LABEL,
-} from '@/providers/codex/types/models';
+import { DEFAULT_CODEX_PRIMARY_MODEL } from '@/providers/codex/types/models';
 
-jest.mock('obsidian', () => ({
-  Notice: jest.fn(),
-  setIcon: jest.fn(),
-}));
+
 
 function makeUsage(overrides: Partial<UsageInfo> = {}): UsageInfo {
   return {
@@ -150,6 +145,7 @@ function createMockUIConfig() {
 
 function createMockCallbacks(overrides: Record<string, any> = {}) {
   return {
+    app: new App(),
     onModelChange: jest.fn().mockResolvedValue(undefined),
     onModeChange: jest.fn().mockResolvedValue(undefined),
     onThinkingBudgetChange: jest.fn().mockResolvedValue(undefined),
@@ -189,6 +185,7 @@ describe('ModelSelector', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (Modal as any).instances = [];
     parentEl = createMockEl();
     callbacks = createMockCallbacks();
     selector = new ModelSelector(parentEl, callbacks);
@@ -200,7 +197,6 @@ describe('ModelSelector', () => {
   });
 
   it('should display current model label', () => {
-    // Default model is 'sonnet' which maps to 'Sonnet'
     const btn = parentEl.querySelector('.claudian-model-btn');
     expect(btn).not.toBeNull();
     const label = btn?.querySelector('.claudian-model-label');
@@ -222,141 +218,56 @@ describe('ModelSelector', () => {
     expect(label?.textContent).toBe('Haiku');
   });
 
-  it('should render model options in reverse order', () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    expect(dropdown).not.toBeNull();
-    // DEFAULT_CLAUDE_MODELS is [haiku, sonnet, opus] -> reversed is [opus, sonnet, haiku]
-    const options = dropdown?.children || [];
-    expect(options.length).toBe(3);
-    // Text is in child span, check first child's textContent
-    expect(options[0]?.children[0]?.textContent).toBe('Opus');
-    expect(options[1]?.children[0]?.textContent).toBe('Sonnet');
-    expect(options[2]?.children[0]?.textContent).toBe('Haiku');
+  it('opens the model picker modal on button click', () => {
+    const btn = parentEl.querySelector('.claudian-model-btn');
+    btn?.dispatchEvent('click', { stopPropagation: () => {} });
+    expect((Modal as any).instances.length).toBe(1);
+    expect((Modal as any).instances[0].open).toHaveBeenCalled();
   });
 
-  it('should mark current model as selected', () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const options = dropdown?.children || [];
-    // Sonnet is current (index 1 in reversed order)
-    const sonnetOption = options.find((o: any) => o.children[0]?.textContent === 'Sonnet');
-    expect(sonnetOption?.hasClass('selected')).toBe(true);
+  it('passes the current model and sorted options to the modal', () => {
+    const btn = parentEl.querySelector('.claudian-model-btn');
+    btn?.dispatchEvent('click', { stopPropagation: () => {} });
+    const modal = (Modal as any).instances[0] as any;
+    expect(modal.currentModel).toBe('sonnet');
+    expect(modal.models.map((m: any) => m.label)).toEqual(['Haiku', 'Sonnet', 'Opus']);
   });
 
-  it('should call onModelChange when option clicked', async () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const options = dropdown?.children || [];
-    const opusOption = options.find((o: any) => o.children[0]?.textContent === 'Opus');
-
-    await opusOption?.dispatchEvent('click', { stopPropagation: () => {} });
+  it('calls onModelChange when the modal selects a model', async () => {
+    const btn = parentEl.querySelector('.claudian-model-btn');
+    btn?.dispatchEvent('click', { stopPropagation: () => {} });
+    const modal = (Modal as any).instances[0] as any;
+    await modal.onSelect('opus');
     expect(callbacks.onModelChange).toHaveBeenCalledWith('opus');
   });
 
-  it('opens the dropdown (pinned) on button click, not just hover', () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    expect(dropdown?.hasClass('claudian-open')).toBe(false);
-    const btn = parentEl.querySelector('.claudian-model-btn');
-    btn?.dispatchEvent('click', { stopPropagation: () => {} });
-    expect(dropdown?.hasClass('claudian-open')).toBe(true);
-  });
-
-  it('toggles closed on a second button click', () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const btn = parentEl.querySelector('.claudian-model-btn');
-    btn?.dispatchEvent('click', { stopPropagation: () => {} });
-    btn?.dispatchEvent('click', { stopPropagation: () => {} });
-    expect(dropdown?.hasClass('claudian-open')).toBe(false);
-  });
-
-  it('closes the dropdown after an option is selected', async () => {
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const btn = parentEl.querySelector('.claudian-model-btn');
-    btn?.dispatchEvent('click', { stopPropagation: () => {} });
-    expect(dropdown?.hasClass('claudian-open')).toBe(true);
-    const options = dropdown?.children || [];
-    const opusOption = options.find((o: any) => o.children[0]?.textContent === 'Opus');
-    await opusOption?.dispatchEvent('click', { stopPropagation: () => {} });
-    expect(dropdown?.hasClass('claudian-open')).toBe(false);
-    expect(callbacks.onModelChange).toHaveBeenCalledWith('opus');
-  });
-
-  it('should always show brand color on model button', () => {
-    const btn = parentEl.querySelector('.claudian-model-btn');
-    expect(btn).toBeTruthy();
-    expect(btn?.hasClass('ready')).toBe(false);
-  });
-
-  it('should use custom models from environment variables', () => {
-    callbacks.getEnvironmentVariables.mockReturnValue(
-      'CLAUDE_CODE_USE_BEDROCK=1\nANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0'
-    );
-    callbacks.getSettings.mockReturnValue({
-      model: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
-      thinkingBudget: 'low',
-      permissionMode: 'normal',
-      enableOpus1M: false,
-      enableSonnet1M: false,
-    });
-    selector.renderOptions();
-    selector.updateDisplay();
-    // Custom models should be available in dropdown
-    const label = parentEl.querySelector('.claudian-model-label');
-    expect(label?.textContent).toBeDefined();
-  });
-
-  it('should not filter custom env models when 1M toggles are enabled', () => {
-    callbacks.getEnvironmentVariables.mockReturnValue(
-      'ANTHROPIC_MODEL=opus'
-    );
-    callbacks.getSettings.mockReturnValue({
-      model: 'opus',
-      thinkingBudget: 'low',
-      permissionMode: 'normal',
-      enableOpus1M: true,
-      enableSonnet1M: true,
-    });
-
-    selector.renderOptions();
-    selector.updateDisplay();
-
-    const label = parentEl.querySelector('.claudian-model-label');
-    expect(label?.textContent).toBe('Opus');
-  });
-
-  it('should render group separators when models have group field', () => {
+  it('hoists the current provider group to the top of the modal list', () => {
     const groupedModels = [
-      { value: 'opus', label: 'Opus', group: 'Claude' },
-      { value: 'sonnet', label: 'Sonnet', group: 'Claude' },
-      { value: DEFAULT_CODEX_PRIMARY_MODEL, label: DEFAULT_CODEX_PRIMARY_MODEL_LABEL, group: 'Codex' },
+      { value: 'codex-model', label: 'Codex Model', group: 'Codex', providerId: 'codex' },
+      { value: 'opus', label: 'Opus', group: 'Claude', providerId: 'claude' },
+      { value: 'sonnet', label: 'Sonnet', group: 'Claude', providerId: 'claude' },
     ];
     const uiConfig = createMockUIConfig();
     uiConfig.getModelOptions.mockReturnValue(groupedModels);
     callbacks.getUIConfig.mockReturnValue(uiConfig);
     callbacks.getSettings.mockReturnValue({
-      model: 'sonnet',
+      model: 'codex-model',
       thinkingBudget: 'low',
       effortLevel: 'high',
       serviceTier: 'default',
       permissionMode: 'normal',
     });
 
-    selector.renderOptions();
-
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const children = dropdown?.children || [];
-    // Reversed: [Codex group, built-in Codex model, Claude group, Sonnet, Opus]
-    const groups = children.filter((c: any) => c.hasClass('claudian-model-group'));
-    expect(groups.length).toBe(2);
-    expect(groups[0]?.textContent).toBe('Codex');
-    expect(groups[1]?.textContent).toBe('Claude');
+    const btn = parentEl.querySelector('.claudian-model-btn');
+    btn?.dispatchEvent('click', { stopPropagation: () => {} });
+    const modal = (Modal as any).instances[0] as any;
+    expect(modal.models[0].providerId).toBe('codex');
+    expect(modal.models[1].providerId).toBe('claude');
+    expect(modal.models[2].providerId).toBe('claude');
   });
 
-  it('should not render group separators when models have no group field', () => {
-    selector.renderOptions();
-
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const children = dropdown?.children || [];
-    const groups = children.filter((c: any) => c.hasClass('claudian-model-group'));
-    expect(groups.length).toBe(0);
+  it('getDropdownEl returns null because the picker is now a modal', () => {
+    expect(selector.getDropdownEl()).toBeNull();
   });
 
   it('should show 1M variants instead of standard variants when enabled', () => {
@@ -369,15 +280,8 @@ describe('ModelSelector', () => {
       enableSonnet1M: true,
     });
 
-    selector.renderOptions();
     selector.updateDisplay();
 
-    const dropdown = parentEl.querySelector('.claudian-model-dropdown');
-    const options = dropdown?.children || [];
-    expect(options.find((o: any) => o.children[0]?.textContent === 'Opus 1M')).toBeDefined();
-    expect(options.find((o: any) => o.children[0]?.textContent === 'Sonnet 1M')).toBeDefined();
-    expect(options.find((o: any) => o.children[0]?.textContent === 'Opus')).toBeUndefined();
-    expect(options.find((o: any) => o.children[0]?.textContent === 'Sonnet')).toBeUndefined();
     expect(parentEl.querySelector('.claudian-model-label')?.textContent).toBe('Opus 1M');
   });
 });
@@ -707,6 +611,56 @@ describe('PermissionToggle', () => {
 
     const container = parentEl2.querySelector('.claudian-permission-toggle');
     expect(container?.style.display).toBe('none');
+  });
+
+  describe('auto mode ("double YOLO") 3-state cycle', () => {
+    function autoCallbacks(permissionMode: string, autoMode: boolean): any {
+      let auto = autoMode;
+      return createMockCallbacks({
+        getAutoMode: jest.fn(() => auto),
+        onAutoModeChange: jest.fn(async (v: boolean) => { auto = v; }),
+        getSettings: jest.fn().mockReturnValue({
+          model: 'sonnet', thinkingBudget: 'low', serviceTier: 'default', permissionMode,
+        }),
+      });
+    }
+
+    it('shows the AUTO label when yolo + autoMode are both active', () => {
+      const cb = autoCallbacks('yolo', true);
+      const el = createMockEl();
+      new PermissionToggle(el, cb);
+      const label = el.querySelector('.claudian-permission-label');
+      expect(label?.textContent).toBe('AUTO');
+      expect(label?.hasClass('auto-active')).toBe(true);
+      expect(el.querySelector('.claudian-toggle-switch')?.hasClass('auto')).toBe(true);
+    });
+
+    it('cycles Safe → YOLO (enables yolo, leaves auto off)', async () => {
+      const cb = autoCallbacks('normal', false);
+      const el = createMockEl();
+      new PermissionToggle(el, cb);
+      await el.querySelector('.claudian-toggle-switch')?.dispatchEvent('click');
+      expect(cb.onPermissionModeChange).toHaveBeenCalledWith('yolo');
+      expect(cb.onAutoModeChange).not.toHaveBeenCalledWith(true);
+    });
+
+    it('cycles YOLO → AUTO (enables autoMode, keeps yolo)', async () => {
+      const cb = autoCallbacks('yolo', false);
+      const el = createMockEl();
+      new PermissionToggle(el, cb);
+      await el.querySelector('.claudian-toggle-switch')?.dispatchEvent('click');
+      expect(cb.onAutoModeChange).toHaveBeenCalledWith(true);
+      expect(cb.onPermissionModeChange).not.toHaveBeenCalled();
+    });
+
+    it('cycles AUTO → Safe (disables both auto and yolo)', async () => {
+      const cb = autoCallbacks('yolo', true);
+      const el = createMockEl();
+      new PermissionToggle(el, cb);
+      await el.querySelector('.claudian-toggle-switch')?.dispatchEvent('click');
+      expect(cb.onAutoModeChange).toHaveBeenCalledWith(false);
+      expect(cb.onPermissionModeChange).toHaveBeenCalledWith('normal');
+    });
   });
 });
 
@@ -1050,6 +1004,24 @@ describe('ContextUsageMeter', () => {
     meter.update(makeUsage({ contextTokens: 160000, contextWindow: 200000, percentage: 80 }));
     const container = parentEl.querySelector('.claudian-context-meter');
     expect(container?.getAttribute('data-tooltip')).toBe('160k / 200k');
+  });
+
+  it('should format million-scale token counts as M', () => {
+    meter.update(makeUsage({ contextTokens: 1_500_000, contextWindow: 1_000_000, percentage: 75 }));
+    const container = parentEl.querySelector('.claudian-context-meter');
+    expect(container?.getAttribute('data-tooltip')).toBe('1.5M / 1M');
+  });
+
+  it('should format sub-thousand token counts as fractional k', () => {
+    meter.update(makeUsage({ contextTokens: 1_500, contextWindow: 200_000, percentage: 1 }));
+    const container = parentEl.querySelector('.claudian-context-meter');
+    expect(container?.getAttribute('data-tooltip')).toBe('1.5k / 200k');
+  });
+
+  it('should prefix estimated percentage with ≈', () => {
+    meter.update(makeUsage({ contextTokens: 50000, contextWindow: 200000, percentage: 25, contextWindowIsAuthoritative: false }));
+    const percent = parentEl.querySelector('.claudian-context-meter-percent');
+    expect(percent?.textContent).toBe('≈25%');
   });
 });
 
