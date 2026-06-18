@@ -7,6 +7,7 @@ import {
 } from '../../../core/commands/builtInCommands';
 import { applyGoalPrefix, parseGoalArgs } from '../../../core/conversation/goalPrompt';
 import { buildDiffPreview } from '../../../core/diff/diffPreview';
+import type { VaultRAGService } from '../../../core/intelligence/rag/VaultRAGService';
 import {
   formatMemoryContext,
   loadMemoryNotes,
@@ -127,6 +128,7 @@ export interface InputControllerDeps {
   /** Returns true if ready. */
   ensureServiceInitialized?: () => Promise<boolean>;
   openConversation?: (conversationId: string) => Promise<void>;
+  getVaultRAGService?: () => VaultRAGService | null;
   onForkAll?: () => Promise<void>;
   restorePrePlanPermissionModeIfNeeded?: () => void;
 }
@@ -374,6 +376,15 @@ export class InputController {
       const memoryContext = formatMemoryContext(memoryCandidates);
       if (memoryContext) {
         turnRequest.text = `${memoryContext}\n\n${turnRequest.text}`;
+      }
+
+      const ragService = this.deps.getVaultRAGService?.();
+      if (ragService) {
+        const ragChunks = await ragService.query(displayContent, { limit: 3 });
+        if (ragChunks.length > 0) {
+          const ragContext = `<vault_context>\nRelevant vault knowledge:\n\n${ragChunks.map(chunk => `- From [[${chunk.path}]] (score ${(chunk.score * 100).toFixed(0)}%):\n  ${chunk.text.slice(0, 400)}`).join('\n\n')}\n</vault_context>`;
+          turnRequest.text = `${ragContext}\n\n${turnRequest.text}`;
+        }
       }
     }
 

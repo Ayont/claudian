@@ -1653,6 +1653,7 @@ export function initializeTabControllers(
     },
     getAgentService: () => tab.service,
     getSubagentManager: () => services.subagentManager,
+    getVaultRAGService: () => plugin.vaultRAGService ?? null,
     getTabProviderId: () => getTabProviderId(tab, plugin),
     consumePendingContextBootstrap: () => {
       const pending = tab.pendingContextBootstrap;
