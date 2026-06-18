@@ -1,55 +1,290 @@
 .claudian-dashboard {
-  padding: 16px;
+  padding: 20px;
+  max-width: 900px;
+  margin: 0 auto;
+  font-family: var(--font-interface);
+  color: var(--text-normal);
 }
 
-.claudian-dashboard h2 {
-  margin-bottom: 16px;
-  font-size: 1.4em;
+.claudian-dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.claudian-dashboard-title-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.claudian-dashboard-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.claudian-dashboard-logo svg {
+  width: 24px;
+  height: 24px;
+}
+
+.claudian-dashboard-text-group h2 {
+  margin: 0;
+  font-size: 1.6em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.claudian-dashboard-text-group p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+
+.claudian-dashboard-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.claudian-dashboard-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.claudian-dashboard-status-dot--active {
+  background: var(--color-green);
+  box-shadow: 0 0 0 3px var(--background-modifier-success);
 }
 
 .claudian-dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .claudian-dashboard-card {
-  background: var(--background-secondary);
+  position: relative;
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: 14px;
+  padding: 18px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  overflow: hidden;
 }
 
-.claudian-dashboard-card h3 {
-  margin: 0 0 8px;
+.claudian-dashboard-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--interactive-accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.claudian-dashboard-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border-color: var(--interactive-accent);
+}
+
+.claudian-dashboard-card:hover::before {
+  opacity: 1;
+}
+
+.claudian-dashboard-card:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.claudian-dashboard-card--ok:hover {
+  border-color: var(--color-green);
+}
+
+.claudian-dashboard-card--ok::before {
+  background: var(--color-green);
+}
+
+.claudian-dashboard-card--warning:hover {
+  border-color: var(--color-orange);
+}
+
+.claudian-dashboard-card--warning::before {
+  background: var(--color-orange);
+}
+
+.claudian-dashboard-card--info:hover {
+  border-color: var(--interactive-accent);
+}
+
+.claudian-dashboard-card--accent:hover {
+  border-color: var(--color-purple);
+}
+
+.claudian-dashboard-card--accent::before {
+  background: var(--color-purple);
+}
+
+.claudian-dashboard-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.claudian-dashboard-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.claudian-dashboard-card-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.claudian-dashboard-card-action {
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.claudian-dashboard-card:hover .claudian-dashboard-card-action {
+  opacity: 1;
+}
+
+.claudian-dashboard-card-value {
+  font-size: 2.4em;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 8px;
+  letter-spacing: -0.03em;
+}
+
+.claudian-dashboard-card-title {
+  margin: 0 0 6px;
   font-size: 1.05em;
+  font-weight: 600;
+  color: var(--text-normal);
 }
 
-.claudian-dashboard-card p {
+.claudian-dashboard-card-subtitle {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.9em;
+  font-size: 0.88em;
+  line-height: 1.4;
 }
 
+.claudian-dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.claudian-dashboard-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.claudian-dashboard-action-btn:hover {
+  background: var(--background-secondary);
+  border-color: var(--interactive-accent);
+  transform: translateY(-1px);
+}
+
+.claudian-dashboard-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.claudian-dashboard-action-btn--primary {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.claudian-dashboard-action-btn--primary:hover {
+  background: var(--interactive-accent-hover);
+  border-color: var(--interactive-accent-hover);
+}
+
+/* Toolbar OS action buttons */
 .claudian-os-actions {
   display: flex;
   gap: 6px;
   align-items: center;
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--background-modifier-border);
 }
 
 .claudian-os-action-button {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  border: none;
-  border-radius: 4px;
-  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 5px 10px;
   font-size: 0.8em;
+  font-weight: 500;
   cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
   white-space: nowrap;
 }
 
 .claudian-os-action-button:hover {
-  background: var(--interactive-accent-hover);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.claudian-os-action-button svg {
+  width: 14px;
+  height: 14px;
 }
