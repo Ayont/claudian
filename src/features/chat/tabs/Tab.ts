@@ -1,5 +1,5 @@
 import type { Component } from 'obsidian';
-import { Notice, Platform } from 'obsidian';
+import { Notice, Platform, setIcon } from 'obsidian';
 
 import { buildConversationContextBootstrap, computeBootstrapCharCap } from '../../../core/conversation/ConversationContextBootstrap';
 import { computeProviderSessionHandoff } from '../../../core/conversation/providerSessionHandoff';
@@ -1198,30 +1198,25 @@ function initializeInputToolbar(
 
   // Claudian OS action buttons: dashboard, multi-agent, RAG index.
   const osActionsEl = inputToolbar.createDiv({ cls: 'claudian-os-actions' });
-  const dashboardBtn = osActionsEl.createEl('button', {
-    cls: 'claudian-os-action-button',
-    attr: { 'aria-label': 'Open Claudian OS dashboard', title: 'Open Claudian OS dashboard' },
-  });
-  dashboardBtn.textContent = 'Dashboard';
-  dashboardBtn.addEventListener('click', () => {
+
+  const createOSButton = (label: string, icon: string, onClick: () => void): HTMLButtonElement => {
+    const btn = osActionsEl.createEl('button', {
+      cls: 'claudian-os-action-button',
+      attr: { 'aria-label': label, title: label },
+    });
+    setIcon(btn.createSpan(), icon);
+    btn.createSpan({ text: label });
+    btn.addEventListener('click', onClick);
+    return btn;
+  };
+
+  createOSButton('Dashboard', 'layout-dashboard', () => {
     void plugin.openDashboard();
   });
-
-  const multiAgentBtn = osActionsEl.createEl('button', {
-    cls: 'claudian-os-action-button',
-    attr: { 'aria-label': 'Run multi-agent task', title: 'Run multi-agent task' },
-  });
-  multiAgentBtn.textContent = 'Multi-Agent';
-  multiAgentBtn.addEventListener('click', () => {
+  createOSButton('Multi-Agent', 'users', () => {
     void plugin.runMultiAgentTask();
   });
-
-  const indexRagBtn = osActionsEl.createEl('button', {
-    cls: 'claudian-os-action-button',
-    attr: { 'aria-label': 'Index vault for RAG', title: 'Index vault for RAG' },
-  });
-  indexRagBtn.textContent = 'Index RAG';
-  indexRagBtn.addEventListener('click', () => {
+  createOSButton('Index RAG', 'search', () => {
     void plugin.indexVaultRAG();
   });
 }
