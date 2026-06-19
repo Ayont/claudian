@@ -9,7 +9,6 @@ export const DEFAULT_CLAUDIAN_SETTINGS: ClaudianSettings = {
   autoMode: false,
   autoModePauseAfter: 25,
   modelRouterEnabled: true,
-  modelRouterAutoMode: true,
   modelRouterRules: [],
   diffPreviewBeforeWrites: true,
   memoryEnabled: true,

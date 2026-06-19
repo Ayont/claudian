@@ -15,7 +15,8 @@ function createMockVault() {
         return Buffer.from(data).toString('utf-8');
       }),
       write: jest.fn(async (path: string, data: string) => {
-        files.set(path, Buffer.from(data, 'utf-8'));
+        const encoded = new TextEncoder().encode(data);
+        files.set(path, encoded.buffer.slice(0));
       }),
       readBinary: jest.fn(async (path: string) => {
         const data = files.get(path);
