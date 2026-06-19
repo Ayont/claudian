@@ -1,6 +1,10 @@
-import { normalizePath, type Vault } from 'obsidian';
+import type { Vault } from 'obsidian';
 
 import type { ImageAttachment, ImageMediaType } from '../../../core/types';
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/');
+}
 
 export interface StagedImageEntry {
   id: string;
@@ -71,7 +75,9 @@ export class ImageStagingService {
     const filename = `${attachment.id}.${ext}`;
     const filePath = normalizePath(`${folder}/${filename}`);
 
-    await this.vault.adapter.writeBinary(filePath, Buffer.from(attachment.data, 'base64').buffer as ArrayBuffer);
+    const buffer = Buffer.from(attachment.data, 'base64');
+    const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    await this.vault.adapter.writeBinary(filePath, arrayBuffer);
 
     const manifest = await this.readManifest();
     const entry: StagedImageEntry = {
