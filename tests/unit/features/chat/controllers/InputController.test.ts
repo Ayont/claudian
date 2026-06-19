@@ -1021,9 +1021,6 @@ describe('InputController - Message Queue', () => {
         mcpMentions: new Set(),
       }));
 
-      let releaseSecondTurn: () => void = () => { throw new Error('Gate not initialized'); };
-      const secondTurnGate = new Promise<void>((resolve) => { releaseSecondTurn = () => resolve(); });
-
       let queryCallCount = 0;
       mockAgentService.query = jest.fn().mockImplementation(() => {
         queryCallCount += 1;
