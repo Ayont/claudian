@@ -8,20 +8,43 @@ import { ANTIGRAVITY_PROVIDER_ICON } from '../../../shared/icons';
 import { getAntigravityProviderSettings, updateAntigravityProviderSettings } from '../settings';
 
 /**
- * Single-model, no-reasoning chat UI config for Antigravity.
+ * Multi-model chat UI config for Antigravity.
  *
- * `agy` has no model-selection or reasoning-effort flags, so the selector
- * shows one synthetic default entry and the reasoning control is empty
- * (capabilities.reasoningControl === 'none').
+ * agy ≥ 1.0.9 exposes `--model "<name>"` and lists choices via `agy models`.
+ * The selector offers a synthetic "Default" entry (lets agy use its configured
+ * default, no flag) plus every model agy reports. Reasoning effort is baked into
+ * the model name (e.g. "(Low)/(Medium)/(High)/(Thinking)"), so the separate
+ * reasoning control stays empty (capabilities.reasoningControl === 'none').
  */
 export const ANTIGRAVITY_DEFAULT_MODEL_ID = 'antigravity-default';
 
-// agy v1.0.3 has no model-selection flag; the active tier (Gemini 3.5 Flash and
-// its reasoning effort) is chosen in Antigravity's interactive model selector
-// and cannot be switched per-invocation from the CLI. One honest entry only.
+/**
+ * Models selectable via `agy --model "<name>"`. The VALUE is the EXACT name
+ * `agy models` prints, so the launch spec passes it through verbatim. Keep in
+ * sync with `agy models`.
+ */
+export const ANTIGRAVITY_MODEL_NAMES: readonly string[] = [
+  'Gemini 3.5 Flash (Low)',
+  'Gemini 3.5 Flash (Medium)',
+  'Gemini 3.5 Flash (High)',
+  'Gemini 3.1 Pro (Low)',
+  'Gemini 3.1 Pro (High)',
+  'Claude Sonnet 4.6 (Thinking)',
+  'Claude Opus 4.6 (Thinking)',
+  'GPT-OSS 120B (Medium)',
+] as const;
+
+const ANTIGRAVITY_MODEL_NAME_SET = new Set<string>(ANTIGRAVITY_MODEL_NAMES);
+
 const ANTIGRAVITY_MODEL_OPTIONS: ProviderUIOption[] = [
-  { value: ANTIGRAVITY_DEFAULT_MODEL_ID, label: 'Antigravity · Gemini 3.5 Flash' },
+  { value: ANTIGRAVITY_DEFAULT_MODEL_ID, label: 'Antigravity · Default' },
+  ...ANTIGRAVITY_MODEL_NAMES.map((name) => ({ value: name, label: `Antigravity · ${name}` })),
 ];
+
+/** True when a model value selects a specific agy model (not the synthetic default). */
+export function isAntigravityModelName(model: string): boolean {
+  return ANTIGRAVITY_MODEL_NAME_SET.has(model);
+}
 
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 
@@ -52,7 +75,7 @@ export const antigravityChatUIConfig: ProviderChatUIConfig = {
   },
 
   ownsModel(model: string): boolean {
-    return model === ANTIGRAVITY_DEFAULT_MODEL_ID;
+    return model === ANTIGRAVITY_DEFAULT_MODEL_ID || ANTIGRAVITY_MODEL_NAME_SET.has(model);
   },
 
   isAdaptiveReasoningModel(): boolean {
@@ -77,8 +100,8 @@ export const antigravityChatUIConfig: ProviderChatUIConfig = {
 
   applyModelDefaults(_model: string, _settings: unknown): void {},
 
-  normalizeModelVariant(_model: string): string {
-    return ANTIGRAVITY_DEFAULT_MODEL_ID;
+  normalizeModelVariant(model: string): string {
+    return ANTIGRAVITY_MODEL_NAME_SET.has(model) ? model : ANTIGRAVITY_DEFAULT_MODEL_ID;
   },
 
   getCustomModelIds(): Set<string> {

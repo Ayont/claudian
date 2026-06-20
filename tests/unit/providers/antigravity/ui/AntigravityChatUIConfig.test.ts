@@ -1,5 +1,53 @@
 import { getAntigravityProviderSettings } from '@/providers/antigravity/settings';
-import { antigravityChatUIConfig } from '@/providers/antigravity/ui/AntigravityChatUIConfig';
+import {
+  ANTIGRAVITY_DEFAULT_MODEL_ID,
+  ANTIGRAVITY_MODEL_NAMES,
+  antigravityChatUIConfig,
+  isAntigravityModelName,
+} from '@/providers/antigravity/ui/AntigravityChatUIConfig';
+
+describe('AntigravityChatUIConfig models', () => {
+  it('offers a Default entry plus every agy model', () => {
+    const options = antigravityChatUIConfig.getModelOptions({});
+    expect(options[0].value).toBe(ANTIGRAVITY_DEFAULT_MODEL_ID);
+    expect(options).toHaveLength(ANTIGRAVITY_MODEL_NAMES.length + 1);
+    for (const name of ANTIGRAVITY_MODEL_NAMES) {
+      expect(options.some((o) => o.value === name)).toBe(true);
+    }
+  });
+
+  it('includes the requested non-Flash models', () => {
+    expect(ANTIGRAVITY_MODEL_NAMES).toEqual(
+      expect.arrayContaining([
+        'Gemini 3.1 Pro (High)',
+        'Claude Sonnet 4.6 (Thinking)',
+        'Claude Opus 4.6 (Thinking)',
+        'GPT-OSS 120B (Medium)',
+      ]),
+    );
+  });
+
+  it('owns the default id and every model name', () => {
+    expect(antigravityChatUIConfig.ownsModel(ANTIGRAVITY_DEFAULT_MODEL_ID, {})).toBe(true);
+    expect(antigravityChatUIConfig.ownsModel('Gemini 3.1 Pro (High)', {})).toBe(true);
+    expect(antigravityChatUIConfig.ownsModel('not-a-model', {})).toBe(false);
+  });
+
+  it('isDefaultModel only for the synthetic default', () => {
+    expect(antigravityChatUIConfig.isDefaultModel(ANTIGRAVITY_DEFAULT_MODEL_ID)).toBe(true);
+    expect(antigravityChatUIConfig.isDefaultModel('Gemini 3.5 Flash (High)')).toBe(false);
+  });
+
+  it('normalizeModelVariant keeps a known model and falls back otherwise', () => {
+    expect(antigravityChatUIConfig.normalizeModelVariant('Gemini 3.1 Pro (Low)', {})).toBe('Gemini 3.1 Pro (Low)');
+    expect(antigravityChatUIConfig.normalizeModelVariant('bogus', {})).toBe(ANTIGRAVITY_DEFAULT_MODEL_ID);
+  });
+
+  it('isAntigravityModelName distinguishes real models from the default', () => {
+    expect(isAntigravityModelName('Claude Opus 4.6 (Thinking)')).toBe(true);
+    expect(isAntigravityModelName(ANTIGRAVITY_DEFAULT_MODEL_ID)).toBe(false);
+  });
+});
 
 describe('AntigravityChatUIConfig permission mode', () => {
   describe('getPermissionModeToggle', () => {

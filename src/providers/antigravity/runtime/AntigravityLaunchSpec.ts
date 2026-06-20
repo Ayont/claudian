@@ -34,6 +34,13 @@ export interface BuildAntigravityLaunchSpecParams {
   /** Newline KEY=VALUE list, used only for launch-key hashing. */
   envText?: string;
   prompt: string;
+  /**
+   * Exact agy model name (e.g. "Gemini 3.1 Pro (High)") passed via `--model`.
+   * Omit/empty to let agy use its own configured default.
+   */
+  model?: string;
+  /** Extra workspace roots to expose (e.g. a temp dir holding dropped attachments). */
+  extraDirs?: string[];
   /** Resume an existing conversation by id, when known. */
   conversationId?: string | null;
   /**
@@ -82,6 +89,21 @@ export function buildAntigravityLaunchSpec(
     args.push('--add-dir', homeDir);
   }
 
+  // Extra roots (e.g. a temp dir holding dropped attachments referenced by @path).
+  const extraDirs = (params.extraDirs ?? [])
+    .map((d) => d.trim())
+    .filter((d) => d && d !== params.cwd && d !== homeDir);
+  for (const dir of extraDirs) {
+    args.push('--add-dir', dir);
+  }
+
+  // Model selection (agy >= 1.0.9). The exact `agy models` name is passed as a
+  // single argv element, so spaces/parens need no shell quoting.
+  const model = params.model?.trim();
+  if (model) {
+    args.push('--model', model);
+  }
+
   const printTimeout = params.printTimeout?.trim();
   if (printTimeout) {
     args.push('--print-timeout', printTimeout);
@@ -107,6 +129,8 @@ export function buildAntigravityLaunchSpec(
       conversationId: conversationId ?? null,
       cwd: params.cwd,
       envText: params.envText ?? '',
+      model: model ?? '',
+      extraDirs,
       permissionMode,
       printTimeout: printTimeout ?? '',
       workspaceScope: params.workspaceScope ?? 'vault-only',

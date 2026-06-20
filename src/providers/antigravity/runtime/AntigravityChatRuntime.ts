@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -61,6 +62,13 @@ import {
   buildPersistedAntigravityState,
   getAntigravityState,
 } from '../types';
+import { isAntigravityModelName } from '../ui/AntigravityChatUIConfig';
+import {
+  buildAttachmentMentionPrefix,
+  decodeBase64Attachment,
+  extensionForMediaType,
+  safeAttachmentStem,
+} from './antigravityAttachments';
 import { buildAntigravityLaunchSpec } from './AntigravityLaunchSpec';
 import { buildAntigravityRuntimeEnv } from './AntigravityRuntimeEnvironment';
 
@@ -94,8 +102,18 @@ export class AntigravityChatRuntime implements ChatRuntime {
   private readonly readyListeners = new Set<(ready: boolean) => void>();
   private activeProcess: ChildProcessWithoutNullStreams | null = null;
   private cancelled = false;
+  /** Temp dir holding staged @path attachments for the current turn (cleaned up after). */
+  private attachmentTempDir: string | null = null;
 
   constructor(private readonly plugin: ClaudianPlugin) {}
+
+  /** Removes the current turn's staged-attachment temp dir, if any. */
+  private cleanupAttachmentTempDir(): void {
+    const dir = this.attachmentTempDir;
+    if (!dir) return;
+    this.attachmentTempDir = null;
+    void fs.rm(dir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+  }
 
   getCapabilities(): Readonly<ProviderCapabilities> {
     return ANTIGRAVITY_PROVIDER_CAPABILITIES;
@@ -162,7 +180,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
   async *query(
     turn: PreparedChatTurn,
     conversationHistory?: ChatMessage[],
-    _queryOptions?: ChatRuntimeQueryOptions,
+    queryOptions?: ChatRuntimeQueryOptions,
   ): AsyncGenerator<StreamChunk> {
     this.currentTurnMetadata = {};
     this.cancelled = false;
@@ -207,6 +225,39 @@ export class AntigravityChatRuntime implements ChatRuntime {
       // Keep the unexpanded prompt on any catalog failure.
     }
 
+    // Stage image / file attachments to a temp dir and reference them via @path
+    // so agy (filesystem-based, multimodal) can read them — verified to work for
+    // both text and images. The dir is exposed via --add-dir and removed after.
+    const attachments = turn.request.images ?? [];
+    let attachmentDir: string | null = null;
+    const attachmentPaths: string[] = [];
+    if (attachments.length > 0) {
+      try {
+        attachmentDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claudian-agy-'));
+        for (let i = 0; i < attachments.length; i++) {
+          const att = attachments[i];
+          const ext = extensionForMediaType(att.mediaType);
+          const stem = safeAttachmentStem(att.name, `attachment-${i + 1}`);
+          const filePath = path.join(attachmentDir, `${stem}.${ext}`);
+          await fs.writeFile(filePath, decodeBase64Attachment(att.data));
+          attachmentPaths.push(filePath);
+        }
+        const prefix = buildAttachmentMentionPrefix(attachmentPaths);
+        if (prefix) {
+          prompt = `${prefix}${prompt}`;
+        }
+      } catch {
+        attachmentDir = null;
+        // Best-effort: fall back to a text-only turn when staging fails.
+      }
+    }
+    this.attachmentTempDir = attachmentDir;
+
+    // Resolve the selected model (a real agy model name → --model; default → none).
+    const selectedModel = isAntigravityModelName(queryOptions?.model ?? '')
+      ? (queryOptions?.model as string)
+      : undefined;
+
     const previousBrainIds = this.conversationId ? null : snapshotBrainConversationIds();
     // Capture how much transcript already exists BEFORE spawning. agy appends
     // this turn's events to the same transcript.jsonl on `--conversation <id>`;
@@ -222,6 +273,8 @@ export class AntigravityChatRuntime implements ChatRuntime {
       env,
       envText,
       prompt,
+      model: selectedModel,
+      extraDirs: attachmentDir ? [attachmentDir] : undefined,
       permissionMode: settings.permissionMode,
       printTimeout: settings.printTimeout,
       workspaceScope: settings.workspaceScope,
@@ -247,6 +300,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
         ...(resolvedSpawnSpec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       });
     } catch (error) {
+      this.cleanupAttachmentTempDir();
       yield {
         type: 'error',
         content: error instanceof Error ? error.message : 'Failed to launch agy.',
@@ -389,7 +443,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
         if (this.activeProcess === proc) {
           this.activeProcess = null;
         }
-        yield* this.query(turn, conversationHistory, _queryOptions);
+        yield* this.query(turn, conversationHistory, queryOptions);
         return;
       }
 
@@ -425,6 +479,7 @@ export class AntigravityChatRuntime implements ChatRuntime {
       if (this.activeProcess === proc) {
         this.activeProcess = null;
       }
+      this.cleanupAttachmentTempDir();
     }
   }
 

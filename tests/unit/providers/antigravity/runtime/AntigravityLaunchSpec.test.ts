@@ -43,6 +43,37 @@ describe('buildAntigravityLaunchSpec', () => {
     expect(spec.args).not.toContain('--sandbox');
   });
 
+  it('passes --model "<name>" verbatim before the prompt when a model is given', () => {
+    const spec = buildAntigravityLaunchSpec({ ...BASE, model: 'Gemini 3.1 Pro (High)' });
+    const mIndex = spec.args.indexOf('--model');
+    expect(mIndex).toBeGreaterThan(-1);
+    // Exact name passed as a single argv element (no shell quoting needed).
+    expect(spec.args[mIndex + 1]).toBe('Gemini 3.1 Pro (High)');
+    // Must precede the prompt value.
+    expect(mIndex).toBeLessThan(spec.args.indexOf('-p'));
+  });
+
+  it('omits --model when no model (uses agy default)', () => {
+    expect(buildAntigravityLaunchSpec(BASE).args).not.toContain('--model');
+    expect(buildAntigravityLaunchSpec({ ...BASE, model: '   ' }).args).not.toContain('--model');
+  });
+
+  it('adds extra dirs via --add-dir (e.g. attachment temp dir), de-duped against cwd', () => {
+    const spec = buildAntigravityLaunchSpec({ ...BASE, extraDirs: ['/tmp/claudian-agy-x', '/vault'] });
+    const addDirArgs = spec.args.filter((_, i) => spec.args[i - 1] === '--add-dir');
+    expect(addDirArgs).toContain('/tmp/claudian-agy-x');
+    // cwd is already added once; the duplicate is dropped.
+    expect(addDirArgs.filter((d) => d === '/vault')).toHaveLength(1);
+  });
+
+  it('reflects model + extraDirs in the launch key', () => {
+    const a = buildAntigravityLaunchSpec(BASE).launchKey;
+    const b = buildAntigravityLaunchSpec({ ...BASE, model: 'Claude Opus 4.6 (Thinking)' }).launchKey;
+    const c = buildAntigravityLaunchSpec({ ...BASE, extraDirs: ['/tmp/x'] }).launchKey;
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(c);
+  });
+
   it('permissionMode "yolo" passes --dangerously-skip-permissions and omits --sandbox', () => {
     const spec = buildAntigravityLaunchSpec({ ...BASE, permissionMode: 'yolo' });
     expect(spec.args).toContain('--dangerously-skip-permissions');

@@ -3,10 +3,11 @@ import type { ProviderCapabilities } from '../../core/providers/types';
 /**
  * Capabilities for the Antigravity (`agy`) CLI provider.
  *
- * Antigravity v1.0.3 exposes only single-shot `--print` text output plus a
- * per-conversation `transcript.jsonl`. It has native conversation resume
- * (`--conversation <id>`) but no JSON stream mode, no model-selection flag,
- * no MCP tool bridging, and no plan/rewind/fork support.
+ * agy (>= 1.0.9) exposes single-shot `--print` output plus a per-conversation
+ * `transcript.jsonl`, native resume (`--conversation <id>`), model selection
+ * (`--model "<name>"`), and multimodal file reading via `@path` mentions — so
+ * images/PDFs/files are uploadable (staged to a temp dir + referenced). It has
+ * no JSON stream mode, no MCP tool bridging, and no plan/rewind/fork support.
  */
 export const ANTIGRAVITY_PROVIDER_CAPABILITIES: Readonly<ProviderCapabilities> = Object.freeze({
   providerId: 'antigravity',
@@ -16,7 +17,7 @@ export const ANTIGRAVITY_PROVIDER_CAPABILITIES: Readonly<ProviderCapabilities> =
   supportsRewind: false,
   supportsFork: false,
   supportsProviderCommands: true,
-  supportsImageAttachments: false,
+  supportsImageAttachments: true,
   supportsInstructionMode: false,
   supportsMcpTools: false,
   supportsMultiAgent: false,
