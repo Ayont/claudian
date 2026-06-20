@@ -79,6 +79,6 @@ describe('formatDroppedFileBlock', () => {
   });
 
   it('exposes a sane size cap', () => {
-    expect(MAX_DROPPED_TEXT_SIZE).toBe(256 * 1024);
+    expect(MAX_DROPPED_TEXT_SIZE).toBe(2 * 1024 * 1024);
   });
 });

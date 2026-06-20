@@ -9,7 +9,7 @@ import {
   MAX_DROPPED_TEXT_SIZE,
 } from './file-drop/droppedTextFile';
 
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const MAX_IMAGE_SIZE = 25 * 1024 * 1024;
 
 const IMAGE_EXTENSIONS: Record<string, ImageMediaType> = {
   '.jpg': 'image/jpeg',
@@ -21,6 +21,13 @@ const IMAGE_EXTENSIONS: Record<string, ImageMediaType> = {
 
 export interface ImageContextCallbacks {
   onImagesChanged: () => void;
+  /**
+   * Stages a dropped non-image/non-text file (PDF, doc, binary, …) into the
+   * vault so any provider's agent can read it, returning the vault-relative path
+   * (or null on failure). Lets PDFs & co work across ALL models via an @path
+   * mention. Optional: when absent, such files are reported as unsupported.
+   */
+  stageVaultAttachment?: (file: File) => Promise<string | null>;
 }
 
 export class ImageContextManager {
@@ -142,7 +149,7 @@ export class ImageContextManager {
     svg.appendChild(polyline);
     svg.appendChild(line);
     dropContent.appendChild(svg);
-    dropContent.createSpan({ text: 'Drop image or text file here' });
+    dropContent.createSpan({ text: 'Drop image, text or file here' });
 
     const dropZone = inputWrapper;
 
@@ -204,6 +211,11 @@ export class ImageContextManager {
         await this.addImageFromFile(file, 'drop');
       } else if (isTextLikeFile(file.name, file.type)) {
         await this.insertDroppedTextFile(file);
+      } else if (this.callbacks.stageVaultAttachment) {
+        // PDF / doc / binary: stage into the vault and @-mention it so ANY
+        // provider's agent can read it (all run with the vault as workspace).
+        const ok = await this.stageAndMentionFile(file);
+        if (!ok) unsupported++;
       } else {
         unsupported++;
       }
@@ -211,9 +223,43 @@ export class ImageContextManager {
 
     if (unsupported > 0) {
       new Notice(
-        `${unsupported} Datei(en) übersprungen — per Drag & Drop werden nur Bilder und Textdateien unterstützt.`,
+        `${unsupported} Datei(en) übersprungen — konnten nicht angehängt werden.`,
       );
     }
+  }
+
+  /**
+   * Stages a non-image/non-text dropped file into the vault and inserts an
+   * `@path` mention into the input, so every provider can read it. Returns false
+   * when staging is unavailable or fails.
+   */
+  private async stageAndMentionFile(file: File): Promise<boolean> {
+    if (!this.callbacks.stageVaultAttachment) return false;
+    let relPath: string | null;
+    try {
+      relPath = await this.callbacks.stageVaultAttachment(file);
+    } catch {
+      relPath = null;
+    }
+    if (!relPath) {
+      new Notice(`„${file.name}" konnte nicht angehängt werden.`);
+      return false;
+    }
+    this.insertIntoInput(`\n\n@${relPath}\n`);
+    new Notice(`„${file.name}" angehängt.`);
+    return true;
+  }
+
+  /** Inserts text into the chat input at the caret (or appends), then refocuses. */
+  private insertIntoInput(text: string): void {
+    const el = this.inputEl;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    const caret = start + text.length;
+    el.setSelectionRange?.(caret, caret);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.focus();
   }
 
   /**
@@ -224,7 +270,7 @@ export class ImageContextManager {
   private async insertDroppedTextFile(file: File): Promise<void> {
     if (file.size > MAX_DROPPED_TEXT_SIZE) {
       new Notice(
-        `„${file.name}" ist zu groß zum Einfügen (max ${Math.round(MAX_DROPPED_TEXT_SIZE / 1024)} KB).`,
+        `„${file.name}" ist zu groß zum Einfügen (max ${this.formatSize(MAX_DROPPED_TEXT_SIZE)}).`,
       );
       return;
     }
@@ -237,15 +283,7 @@ export class ImageContextManager {
       return;
     }
 
-    const block = formatDroppedFileBlock(file.name, content);
-    const el = this.inputEl;
-    const start = el.selectionStart ?? el.value.length;
-    const end = el.selectionEnd ?? el.value.length;
-    el.value = el.value.slice(0, start) + block + el.value.slice(end);
-    const caret = start + block.length;
-    el.setSelectionRange?.(caret, caret);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.focus();
+    this.insertIntoInput(formatDroppedFileBlock(file.name, content));
     new Notice(`„${file.name}" als Text eingefügt.`);
   }
 

@@ -46,6 +46,7 @@ import { SubagentManager } from '../services/SubagentManager';
 import { ChatState } from '../state/ChatState';
 import { BangBashModeManager as BangBashModeManagerClass } from '../ui/BangBashModeManager';
 import { CommitBar } from '../ui/CommitBar';
+import { buildVaultAttachmentPath, parentFolder } from '../ui/file-drop/vaultAttachment';
 import { FileContextManager } from '../ui/FileContext';
 import { FilePreviewPanel } from '../ui/FilePreviewPanel';
 import { GoalBanner } from '../ui/GoalBanner';
@@ -919,6 +920,23 @@ function initializeContextManagers(tab: TabData, plugin: ClaudianPlugin): void {
         tab.controllers.canvasSelectionController?.updateContextRowVisibility();
         autoResizeTextarea(dom.inputEl);
         tab.renderer?.scrollToBottomIfNeeded();
+      },
+      // Stage dropped PDFs / docs / binary files into the vault so any provider's
+      // agent can read them via the @path mention inserted by the drop handler.
+      stageVaultAttachment: async (file: File): Promise<string | null> => {
+        try {
+          const buffer = await file.arrayBuffer();
+          const relPath = buildVaultAttachmentPath(file.name, String(Date.now()));
+          const adapter = plugin.app.vault.adapter;
+          const folder = parentFolder(relPath);
+          if (folder && !(await adapter.exists(folder))) {
+            await adapter.mkdir(folder);
+          }
+          await adapter.writeBinary(relPath, buffer);
+          return relPath;
+        } catch {
+          return null;
+        }
       },
     },
     dom.contextRowEl,

@@ -1,3 +1,4 @@
+import type { App } from 'obsidian';
 import { Modal, Notice, setIcon } from 'obsidian';
 
 import type ClaudianPlugin from '../../main';
@@ -12,7 +13,7 @@ export class ArtifactGalleryModal extends Modal {
   private artifacts: ArtifactMeta[] = [];
   private gridEl: HTMLElement | null = null;
 
-  constructor(app: import('obsidian').App, private readonly plugin: ClaudianPlugin) {
+  constructor(app: App, private readonly plugin: ClaudianPlugin) {
     super(app);
     this.modalEl.addClass('claudian-artifact-gallery-modal');
   }

@@ -1,8 +1,8 @@
 import type { App, Component } from 'obsidian';
 import { MarkdownRenderer, Menu, Notice, setIcon } from 'obsidian';
 
-import { DEFAULT_CHAT_PROVIDER_ID, type ProviderCapabilities, type ProviderId } from '../../../core/providers/types';
 import { ProviderRegistry } from '../../../core/providers/ProviderRegistry';
+import { DEFAULT_CHAT_PROVIDER_ID, type ProviderCapabilities, type ProviderId } from '../../../core/providers/types';
 import type { ChatRewindMode } from '../../../core/runtime/types';
 import {
   isSubagentToolName,

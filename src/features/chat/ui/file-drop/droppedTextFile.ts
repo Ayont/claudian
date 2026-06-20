@@ -6,8 +6,8 @@
  * the message stays a plain string. Pure functions only; no DOM, no I/O.
  */
 
-/** Max size of a dropped text file we inline into the prompt (256 KB). */
-export const MAX_DROPPED_TEXT_SIZE = 256 * 1024;
+/** Max size of a dropped text file we inline into the prompt (2 MB). */
+export const MAX_DROPPED_TEXT_SIZE = 2 * 1024 * 1024;
 
 /** Extensions we treat as inline-able text. */
 const TEXT_EXTENSIONS = new Set([

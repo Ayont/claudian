@@ -363,7 +363,7 @@ describe('ImageContextManager - Private Helpers', () => {
       const file = {
         name: 'huge.png',
         type: 'image/png',
-        size: 6 * 1024 * 1024, // 6MB > 5MB limit
+        size: 26 * 1024 * 1024, // 26MB > 25MB limit
         arrayBuffer: jest.fn(),
       } as unknown as File;
 
